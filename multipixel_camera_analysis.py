@@ -67,9 +67,9 @@ def h5_fft(h5filepath, datalength=-1, sectionlength=8000):
         freqs_transf = np.fft.rfftfreq(sectionlength, 1/samplingrate_transf)
     return freqs_transf, fft_transf
 
-def isolate_frequency(target_frequency, full_fft):
+def isolate_frequency(target_frequency, full_fft, sectionlength=8000):
     if type(full_fft) is str:
-        full_fft = h5_fft(full_fft)
+        full_fft = h5_fft(full_fft, sectionlength=8000)
     target_index = findclosestoset(full_fft[0], [target_frequency])[0]
     return full_fft[1][target_index]
 
@@ -166,12 +166,13 @@ def windowed_psd(series, samplingrate, sqrt = True, detrend='linear', winsize=80
 class parallelsummer:
     def __init__(self, mask=None):
         self.mask = mask
+        if len(self.mask.shape) == 2: self.mask = self.mask[:,:,np.newaxis]
         
     def findSectionSumsMasked(self, frame):
         '''See parallelSums'''
-        return np.sum(frame*self.mask)
+        return np.sum(frame[:,:,np.newaxis]*self.mask, axis=(0,1))
 
-    def parallelSumsMasked(self,h5filepath,datalength=-1):
+    def parallelSumsMasked_h5(self,h5filepath,datalength=-1):
         nums = []
 
         f = h5py.File(h5filepath, 'r')
@@ -186,6 +187,19 @@ class parallelsummer:
 
         return returnval
     
+    def parallelSumsMasked_array(self,arr,datalength=-1):
+        nums = []
+
+        if datalength==-1: datalength=len(arr)
+        returnval=[]
+
+        # ### parallel processing ###
+        pool = multiprocessing.Pool(processes=6, \
+                initializer=start_process, maxtasksperchild=50)
+        returnval = pool.starmap(self.findSectionSumsMasked, zip(arr))
+
+        return returnval
+    
     def set_mask(self, mask):
         self.mask = mask   
         
@@ -195,7 +209,22 @@ def generate_masks(xfile, yfile, frequency, blurred=True):
     if blurred:
         xmap = phase_to_mask(xmap)
         ymap = phase_to_mask(ymap)
-    return xmap, ymap
+    return np.dstack((xmap, ymap))
+
+def manual_leftinv(matrix):
+    return np.matmul(np.linalg.inv(np.matmul(matrix.T, matrix)), matrix.T)
+
+def generate_diagonal_masks(xfile, yfile, frequency, blurred=True, real=True):
+    shape = getimage0(xfile).shape
+    if shape != getimage0(yfile).shape:
+        raise ValueError("X File and Y file aren't the same shape")
+    x1 = isolate_frequency(frequency, xfile)
+    y1 = isolate_frequency(frequency, yfile)
+    maps = np.squeeze(np.dstack((x1.flatten(), y1.flatten())))
+    if real:
+        maps = np.real(maps)
+    maps_inv = manual_leftinv(maps)
+    return maps_inv.T.reshape((shape[0],shape[1],2))
 
 def calculate_snr(psd_vals, signal_values, maxval=None):
     if maxval is None:
@@ -208,8 +237,8 @@ def calculate_snr(psd_vals, signal_values, maxval=None):
     mask[maxval:] = False
     return np.mean(psd_vals[0][signal_values])/np.mean(psd_vals[0][mask])
         
-def makeTransferFuncPlot(maskx, masky, xfile, yfile, zfile=None, xvals=None, ylim=None, datalength=-1, plotname = None):
-    pars = [parallelsummer(maskx),parallelsummer(masky)]
+def makeTransferFuncPlot(masks, xfile, yfile, zfile=None, xvals=None, ylim=None, datalength=-1, plotname = None):
+    par = parallelsummer(masks)
     if zfile is not None:
         files = [xfile, yfile, zfile]
     else:
@@ -218,11 +247,11 @@ def makeTransferFuncPlot(maskx, masky, xfile, yfile, zfile=None, xvals=None, yli
     titles = ["x", "y", "z"]
     fig, axs = plt.subplots(2,len(files), figsize=(18,3*len(files)), sharex=True,sharey=True)
     fig.subplots_adjust(hspace=0.175,wspace=0.1)
-    for i in range(2):
-        for j in range(len(files)):
-            vals = pars[i].parallelSumsMasked(files[j], datalength)
-            samplingrate = getsamplingrate(files[j])
-            data = windowed_psd(np.abs(vals), samplingrate, winsize=int(samplingrate*10))
+    for j in range(len(files)):
+        vals = par.parallelSumsMasked_h5(files[j], datalength)
+        samplingrate = getsamplingrate(files[j])
+        for i in range(2):
+            data = windowed_psd(np.abs(np.array(vals)[:,i]), samplingrate, winsize=int(samplingrate*10))
             title = f"Response in {titles[i]} to drive in {titles[j]}"    
             make_scatterplot(fig, axs[i,j], data, title, xvals=xvals, ylim=ylim)
             if xvals is not None:
