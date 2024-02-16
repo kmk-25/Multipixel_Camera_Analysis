@@ -237,7 +237,9 @@ def calculate_snr(psd_vals, signal_values, maxval=None):
     mask[maxval:] = False
     return np.mean(psd_vals[0][signal_values])/np.mean(psd_vals[0][mask])
         
-def makeTransferFuncPlot(masks, xfile, yfile, zfile=None, xvals=None, ylim=None, datalength=-1, plotname = None):
+def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, xvals=None, ylim=None, datalength=-1, plotname = None):
+    force = get_driveforce(xbeadfile, ybeadfile, electrons=9, xvals = np.arange(1,100))
+    print(force)
     par = parallelsummer(masks)
     if zfile is not None:
         files = [xfile, yfile, zfile]
@@ -247,16 +249,29 @@ def makeTransferFuncPlot(masks, xfile, yfile, zfile=None, xvals=None, ylim=None,
     titles = ["x", "y", "z"]
     fig, axs = plt.subplots(2,len(files), figsize=(18,3*len(files)), sharex=True,sharey=True)
     fig.subplots_adjust(hspace=0.175,wspace=0.1)
+    
+    m = [0,0,0,0]
+    calib = [0,0]
+    
     for j in range(len(files)):
         vals = par.parallelSumsMasked_h5(files[j], datalength)
         samplingrate = getsamplingrate(files[j])
         for i in range(2):
             data = windowed_psd(np.abs(np.array(vals)[:,i]), samplingrate, winsize=int(samplingrate*10))
+            if i == j:   
+                indices = findclosestoset(data[1], np.arange(1,100))
+                calib[j] = force[j]/np.mean(data[0][indices])
+            m[2*j+i] = data
+    for j in range(len(files)):
+        for i in range(2):
+            data = (m[2*j+i][0]*calib[i], m[2*j+i][1])
             title = f"Response in {titles[i]} to drive in {titles[j]}"    
             print(xvals)
             make_scatterplot(fig, axs[i,j], data, title, xvals=xvals, ylim=ylim)
             if xvals is not None:
                 print(f"SNR for response in {titles[i]} to drive in {titles[j]} = {calculate_snr(data, xvals, maxval=300)}")
+            if i != j:
+                print(f"Cross coupling in {titles[i]} from drive in {titles[j]} = {np.mean(data[0][indices])/force[j]:.00%}")
     
     axs[0,0].set_ylabel(r'$\sqrt{S_x} [N/\sqrt{Hz}]$')
     axs[1,0].set_ylabel(r'$\sqrt{S_y} [N/\sqrt{Hz}]$')
@@ -265,3 +280,25 @@ def makeTransferFuncPlot(masks, xfile, yfile, zfile=None, xvals=None, ylim=None,
         
     if plotname is not None:
         plt.savefig(plotname)
+
+import sys
+sys.path.append("../../Tools") # go to parent dir
+from BeadDataFile import *
+
+def get_driveforce(xfile, yfile, electrons=9, xvals = np.arange(1,100)):
+    xt_electrodes = BeadDataFile('/data/new_trap/20231109/Bead0/TransFunc/trapFocus/3/TF_X_0.h5')
+    yt_electrodes = BeadDataFile('/data/new_trap/20231109/Bead0/TransFunc/trapFocus/3/TF_Y_0.h5')
+    xdrive_efield = (xt_electrodes.electrode_data[0]-xt_electrodes.electrode_data[1])*100*0.66/8.6e-3
+    ydrive_efield = (yt_electrodes.electrode_data[0]-yt_electrodes.electrode_data[1])*100*0.66/8.6e-3
+
+    xdrive_force = xdrive_efield*scipy.constants.e*electrons
+    ydrive_force = ydrive_efield*scipy.constants.e*electrons
+
+    xforce_psd = windowed_psd(xdrive_force,5000,winsize=50000)
+    yforce_psd = windowed_psd(ydrive_force,5000,winsize=50000)
+    
+    indices = findclosestoset(xforce_psd[1], xvals)
+    
+    xforce_avgpsd = np.mean(xforce_psd[0][indices])
+    yforce_avgpsd = np.mean(yforce_psd[0][indices])
+    return (xforce_avgpsd, yforce_avgpsd)
