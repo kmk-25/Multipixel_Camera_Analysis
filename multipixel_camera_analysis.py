@@ -214,7 +214,7 @@ def generate_masks(xfile, yfile, frequency, blurred=True):
 def manual_leftinv(matrix):
     return np.matmul(np.linalg.inv(np.matmul(matrix.T, matrix)), matrix.T)
 
-def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, blurred=True, real=True):
+def generate_diagonal_masks(xfile, yfile, frequency, real=True):
     shape = getimage0(xfile).shape
     if shape != getimage0(yfile).shape:
         raise ValueError("X File and Y file aren't the same shape")
