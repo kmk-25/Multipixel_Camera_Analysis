@@ -115,7 +115,7 @@ def make_scatterplot(fig, ax, values, title, xvals=None, ylim=None):
     ax.set_yscale('log')
     if ylim is not None:
         ax.set_ylim(ylim[0],ylim[1])
-    ax.set_xlim(1, 400)
+    ax.set_xlim(1, 800)
     ax.grid(which='major', linestyle='--', linewidth='0.5', color='black', alpha=0.5)
     ax.set_title(title)
     
@@ -214,12 +214,12 @@ def generate_masks(xfile, yfile, frequency, blurred=True):
 def manual_leftinv(matrix):
     return np.matmul(np.linalg.inv(np.matmul(matrix.T, matrix)), matrix.T)
 
-def generate_diagonal_masks(xfile, yfile, frequency, blurred=True, real=True):
+def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, blurred=True, real=True):
     shape = getimage0(xfile).shape
     if shape != getimage0(yfile).shape:
         raise ValueError("X File and Y file aren't the same shape")
-    x1 = isolate_frequency(frequency, xfile)
-    y1 = isolate_frequency(frequency, yfile)
+    x1 = isolate_frequency(xfrequency, xfile)
+    y1 = isolate_frequency(yfrequency, yfile)
     maps = np.squeeze(np.dstack((x1.flatten(), y1.flatten())))
     if real:
         maps = np.real(maps)
@@ -253,6 +253,7 @@ def makeTransferFuncPlot(masks, xfile, yfile, zfile=None, xvals=None, ylim=None,
         for i in range(2):
             data = windowed_psd(np.abs(np.array(vals)[:,i]), samplingrate, winsize=int(samplingrate*10))
             title = f"Response in {titles[i]} to drive in {titles[j]}"    
+            print(xvals)
             make_scatterplot(fig, axs[i,j], data, title, xvals=xvals, ylim=ylim)
             if xvals is not None:
                 print(f"SNR for response in {titles[i]} to drive in {titles[j]} = {calculate_snr(data, xvals, maxval=300)}")
