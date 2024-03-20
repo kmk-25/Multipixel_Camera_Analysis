@@ -9,5 +9,5 @@ setup(
 
     py_modules=['multipixel_camera_analysis'],
     install_requires=[
-    'numpy','scipy','matplotlib','h5py'],
+    'numpy','scipy','matplotlib','h5py','dill'],
 )

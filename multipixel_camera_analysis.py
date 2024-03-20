@@ -4,6 +4,7 @@ import h5py
 from matplotlib.colors import LinearSegmentedColormap
 import matplotlib.pyplot as plt
 import scipy
+from BeadDataFile import *
 
 def start_process():
     '''
@@ -232,7 +233,7 @@ def generate_masks(xfile, yfile, frequency, blurred=True):
 def manual_leftinv(matrix):
     return np.matmul(np.linalg.inv(np.matmul(matrix.T, matrix)), matrix.T)
 
-def generate_diagonal_masks(xfile, yfile, frequency, real=True):
+def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True):
     shape = getimage0(xfile).shape
     if shape != getimage0(yfile).shape:
         raise ValueError("X File and Y file aren't the same shape")
@@ -285,10 +286,6 @@ def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, 
         
     if plotname is not None:
         plt.savefig(plotname)
-
-import sys
-sys.path.append("../../Tools") # go to parent dir
-from BeadDataFile import *
 
 def force_calibration(masks, xfile, yfile, xbeadfile, ybeadfile, electrons=9, xvals=np.arange(1,100), datalength=-1):
     files = [xfile, yfile]
