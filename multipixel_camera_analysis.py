@@ -44,23 +44,23 @@ def h5_fft(h5filepath, datalength=-1, sectionlength=8000):
     with h5py.File(h5filepath, 'r') as f:
         if datalength==-1: datalength=len(f['cameradata']['arrays'])
         nsections = len(f['cameradata']['arrays'])//sectionlength
-        imageshape = f['cameradata']['arrays'].shape
+        imageshape = f['cameradata']['arrays'][0].shape
         
         #index represents the xy coordinate of the pixel with greatest magnitude in the first image.
         #it is arbitrarily chosen to normalize the phase
-        index = np.unravel_index(np.argmax(f['cameradata']['arrays'][0]), f['cameradata']['arrays'][0].shape)
+        index = np.unravel_index(np.argmax(f['cameradata']['arrays'][0]), imageshape)
+        index_slice = tuple([slice(None)]) + tuple(index)
         
         #calculate fft, then divide by phase of index pixel. 
         #Dividing by nsections allows us to get the average with a simple sum.
         fft_transf=np.fft.rfft(f['cameradata']['arrays'][:sectionlength], axis=0)/nsections
-        bigpixel_phase = fft_transf[:,index[0],index[1]]/np.abs(fft_transf[:,index[0],index[1]])
-        fft_transf = fft_transf/np.tile(np.reshape(bigpixel_phase, (len(fft_transf),1,1)), (1,imageshape[1],imageshape[2]))
+        bigpixel_phase = fft_transf[index_slice]/np.abs(fft_transf[index_slice])
+        fft_transf = fft_transf/np.tile(np.reshape(bigpixel_phase, tuple([len(fft_transf)])+tuple([1]*len(imageshape))), tuple([1])+tuple(imageshape))
         
         #splits the data into sections, takes the fft of each, and averages.
         for i in range(1,nsections):
             temp = np.fft.rfft(f['cameradata']['arrays'][i*sectionlength:(i+1)*sectionlength], axis=0)/nsections
-            bigpixel_phase = temp[:,index[0],index[1]]/np.abs(temp[:,index[0],index[1]])
-            temp = temp/np.tile(np.reshape(bigpixel_phase, (len(fft_transf),1,1)), (1,imageshape[1],imageshape[2]))
+            bigpixel_phase = temp[index_slice]/np.abs(temp[index_slice])
             fft_transf += temp
             
         #calculates and returns numpy fft frequency conventions for sampling rate and section length
@@ -79,7 +79,7 @@ def singlefreq_fft(h5filepath, frequency, hz=True):
     with h5py.File(h5filepath, 'r') as f:
         samplingrate = f['auxdata']['samplingrate'][()]
         deltatime = 1/samplingrate
-        counter = np.zeros((f['cameradata']['arrays'].shape[1],f['cameradata']['arrays'].shape[2]), dtype='complex128')
+        counter = np.zeros(f['cameradata']['arrays'][0].shape, dtype='complex128')
         for n, val in enumerate(f['cameradata']['arrays'][:-1]):
             counter += val*np.exp(-1j*deltatime*frequency)
     return counter
