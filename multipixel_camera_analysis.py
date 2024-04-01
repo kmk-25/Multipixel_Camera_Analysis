@@ -103,12 +103,12 @@ def save_angleplot(arr, title, filename, mask=None):
     plt.savefig(filename)
     plt.clf()
     
-def make_scatterplot(fig, ax, values, title, xvals=None, ylim=None):
+def make_scatterplot(fig, ax, values, title, xvals=None, ylim=None, **plotargs):
     if xvals is not None:
         indices = findclosestoset(values[1],xvals)
     else:
         indices = slice(None)
-    ax.scatter(values[1][indices], values[0][indices], color='blue', label='', alpha=1, s=10)
+    ax.scatter(values[1][indices], values[0][indices], **plotargs)
 
     ax.tick_params(axis='both',which='both', bottom=False, left=False)
 
@@ -120,9 +120,9 @@ def make_scatterplot(fig, ax, values, title, xvals=None, ylim=None):
     ax.grid(which='major', linestyle='--', linewidth='0.5', color='black', alpha=0.5)
     ax.set_title(title)
     
-def save_scatterplot(values, title, filename, xvals=None, ylim=None):
+def save_scatterplot(values, title, filename, xvals=None, ylim=None, **plotargs):
     fig, ax = plt.subplots()
-    make_scatterplot(fig, ax, values, title, xvals=xvals, ylim=ylim)
+    make_scatterplot(fig, ax, values, title, xvals=xvals, ylim=ylim, **plotargs)
     plt.savefig(filename)
     plt.clf()
     
@@ -256,7 +256,7 @@ def calculate_snr(psd_vals, signal_values, maxval=None):
     mask[maxval:] = False
     return np.mean(psd_vals[0][signal_values])/np.mean(psd_vals[0][mask])
         
-def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, xvals=None, ylim=None, datalength=-1, plotname = None, electrons=9):
+def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, xvals=None, ylim=None, datalength=-1, plotname = None, electrons=9, plotbase=None, **plotargs):
     calib = [1,1]
     if xvals is not None:
         calib = force_calibration(masks, xfile, yfile, xbeadfile, ybeadfile, electrons=electrons, xvals=xvals, datalength=datalength)
@@ -268,7 +268,10 @@ def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, 
         files = [xfile,yfile]
     
     titles = ["x", "y", "z"]
-    fig, axs = plt.subplots(2,len(files), figsize=(18,3*len(files)), sharex=True,sharey=True)
+    if plotbase is not None:
+        fig, axs = plotbase
+    else:
+        fig, axs = plt.subplots(2,len(files), figsize=(18,3*len(files)), sharex=True,sharey=True)
     fig.subplots_adjust(hspace=0.175,wspace=0.1)
     
     for j in range(len(files)):
@@ -277,7 +280,7 @@ def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, 
         for i in range(2):
             data = windowed_psd(np.abs(np.array(vals)[:,i])*calib[i], samplingrate, winsize=int(samplingrate*10))
             title = f"Response in {titles[i]} to drive in {titles[j]}"    
-            make_scatterplot(fig, axs[i,j], data, title, xvals=xvals, ylim=ylim)
+            make_scatterplot(fig, axs[i,j], data, title, xvals=xvals, ylim=ylim, **plotargs)
     
     axs[0,0].set_ylabel(r'$\sqrt{S_x} [N/\sqrt{Hz}]$')
     axs[1,0].set_ylabel(r'$\sqrt{S_y} [N/\sqrt{Hz}]$')
@@ -286,6 +289,7 @@ def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, 
         
     if plotname is not None:
         plt.savefig(plotname)
+    return (fig, axs)
 
 def force_calibration(masks, xfile, yfile, xbeadfile, ybeadfile, electrons=9, xvals=np.arange(1,100), datalength=-1):
     files = [xfile, yfile]
