@@ -35,6 +35,41 @@ def getsamplingrate(h5filepath):
         samplingrate = f['auxdata']['samplingrate'][()]
     return samplingrate
 
+def getsubsetmap(h5filepath):
+    with h5py.File(h5filepath, 'r') as f:
+        subsetmap = f['auxdata']['subsetmap'][:]
+    return subsetmap
+
+def subsetframe(sourcedata, frame):
+    return sourcedata[frame]
+
+def mulitsubset(sourcefilename, targetfilename, frame, filelength = np.inf):
+    sourcefile = h5py.File(sourcefilename, 'r')
+    targetfile = h5py.File(targetfilename, 'w')
+    filelength = min(len(sourcefile['cameradata']['arrays']), filelength)
+    returnval=[]
+    pool = multiprocessing.Pool(processes=6,
+                initializer=start_process, maxtasksperchild=50)
+    try:
+        #Initialize file
+        targetfile.create_group("auxdata")
+        targetfile.create_dataset("auxdata/subsetmap", data=frame)
+        targetfile.create_dataset("auxdata/samplingrate", data=sourcefile['auxdata']['samplingrate'][()])
+        im0_test = sourcefile['cameradata']['arrays'][0][frame]
+        targetfile.create_group("cameradata")
+        targetfile.create_dataset("cameradata/arrays", data=pool.starmap(subsetframe, zip(sourcefile['cameradata']['arrays'][:filelength], [frame]*filelength)))
+    except:  
+        pool.close()
+        sourcefile.close()
+        targetfile.close()
+        raise
+    
+
+def expand_fromsubset(vector, subsetmap):
+    outp = np.zeros_like(subsetmap,dtype=vector.dtype)
+    outp[subsetmap] = vector
+    return outp
+
 def getimage0(h5filepath):
     with h5py.File(h5filepath, 'r') as f:
         image0 = f['cameradata']['arrays'][0]
@@ -185,10 +220,11 @@ def windowed_fft(series, samplingrate, detrend='linear', winsize=8000):
 class parallelsummer:
     def __init__(self, mask=None):
         self.mask = mask
-        if len(self.mask.shape) == 2: self.mask = self.mask[:,:,np.newaxis]
+        #if len(self.mask.shape) == 2: self.mask = self.mask[:,:,np.newaxis]
         
     def findSectionSumsMasked(self, frame):
         '''See parallelSums'''
+        #return np.sum(frame[:,np.newaxis]*self.mask, axis=(0))
         return np.sum(frame[:,:,np.newaxis]*self.mask, axis=(0,1))
 
     def parallelSumsMasked_h5(self,h5filepath,datalength=-1):
@@ -202,6 +238,7 @@ class parallelsummer:
         pool = multiprocessing.Pool(processes=6, \
                 initializer=start_process, maxtasksperchild=50)
         returnval = pool.starmap(self.findSectionSumsMasked, zip(f['cameradata']['arrays'][:datalength]))
+        pool.close()
         f.close()
 
         return returnval
@@ -216,7 +253,7 @@ class parallelsummer:
         pool = multiprocessing.Pool(processes=6, \
                 initializer=start_process, maxtasksperchild=50)
         returnval = pool.starmap(self.findSectionSumsMasked, zip(arr))
-
+        pool.close()
         return returnval
     
     def set_mask(self, mask):
@@ -243,7 +280,7 @@ def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True):
     if real:
         maps = np.real(maps)
     maps_inv = manual_leftinv(maps)
-    return maps_inv.T.reshape((shape[0],shape[1],2))
+    return maps_inv.T.reshape(shape+tuple([2]))
 
 def calculate_snr(psd_vals, signal_values, maxval=None):
     if maxval is None:
