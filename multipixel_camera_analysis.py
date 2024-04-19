@@ -4,6 +4,7 @@ import h5py
 from matplotlib.colors import LinearSegmentedColormap
 import matplotlib.pyplot as plt
 import scipy
+import functools
 from BeadDataFile import *
 
 def start_process():
@@ -40,13 +41,31 @@ def getsubsetmap(h5filepath):
         subsetmap = f['auxdata']['subsetmap'][:]
     return subsetmap
 
-def subsetframe(sourcedata, frame):
-    return sourcedata[frame]
+def getnormscale(h5filepath):
+    with h5py.File(h5filepath, 'r') as f:
+        image0 = f['auxdata']['normalizationscale'][()]
+    return image0
 
-def mulitsubset(sourcefilename, targetfilename, frame, filelength = np.inf):
+def subsetframe(sourcedata, frame, normalize, normalfactor):
+    if normalize:
+        return np.uint8(np.round(normalfactor*sourcedata[frame]/np.sum(sourcedata[frame])))
+    else:
+        return sourcedata[frame]
+
+def multisubset(sourcefilename, targetfilename, frame, datalength = np.inf, normalize=True):
+    im0 = getimage0(sourcefilename)
+    
     sourcefile = h5py.File(sourcefilename, 'r')
     targetfile = h5py.File(targetfilename, 'w')
-    filelength = min(len(sourcefile['cameradata']['arrays']), filelength)
+    datalength = min(len(sourcefile['cameradata']['arrays']), datalength)
+    
+    if normalize:
+        scale = 240/np.max(im0/np.sum(im0))
+    else:
+        scale = 1
+        
+    subsetframe_specific = functools.partial(subsetframe, frame=frame, normalize=normalize, normalfactor=scale)
+    
     returnval=[]
     pool = multiprocessing.Pool(processes=6,
                 initializer=start_process, maxtasksperchild=50)
@@ -55,15 +74,41 @@ def mulitsubset(sourcefilename, targetfilename, frame, filelength = np.inf):
         targetfile.create_group("auxdata")
         targetfile.create_dataset("auxdata/subsetmap", data=frame)
         targetfile.create_dataset("auxdata/samplingrate", data=sourcefile['auxdata']['samplingrate'][()])
+        targetfile.create_dataset("auxdata/normalizationscale", data=scale)
         im0_test = sourcefile['cameradata']['arrays'][0][frame]
         targetfile.create_group("cameradata")
-        targetfile.create_dataset("cameradata/arrays", data=pool.starmap(subsetframe, zip(sourcefile['cameradata']['arrays'][:filelength], [frame]*filelength)))
+        targetfile.create_dataset("cameradata/arrays", data=pool.starmap(subsetframe_specific, zip(sourcefile['cameradata']['arrays'][:datalength])))
     except:  
         pool.close()
         sourcefile.close()
         targetfile.close()
         raise
+    pool.close()
+    sourcefile.close()
+    targetfile.close()
     
+def serialsubset(sourcefilename, targetfilename, frame, datalength = np.inf):
+    #Way too slow: fix
+    sourcefile = h5py.File(sourcefilename, 'r')
+    targetfile = h5py.File(targetfilename, 'w')
+    
+    try:
+        datalength = min(len(sourcefile['cameradata']['arrays']), datalength)
+
+        targetfile.create_group("auxdata")
+        targetfile.create_dataset("auxdata/subsetmap", data=frame)
+        targetfile.create_dataset("auxdata/samplingrate", data=sourcefile['auxdata']['samplingrate'][()])
+        im0_test = sourcefile['cameradata']['arrays'][0][frame]
+        targetfile.create_group("cameradata")
+        targetfile.create_dataset("cameradata/arrays", (len(sourcefile['cameradata']['arrays']), len(im0_test)))
+        for i in range(len(sourcefile['cameradata']['arrays'])):
+            targetfile['cameradata']['arrays'][i] = sourcefile['cameradata']['arrays'][i][frame]
+    except:
+        sourcefile.close()
+        targetfile.close()
+        raise
+    sourcefile.close()
+    targetfile.close()
 
 def expand_fromsubset(vector, subsetmap):
     outp = np.zeros_like(subsetmap,dtype=vector.dtype)
@@ -75,9 +120,9 @@ def getimage0(h5filepath):
         image0 = f['cameradata']['arrays'][0]
     return image0
 
-def h5_fft(h5filepath, datalength=-1, sectionlength=8000):
+def h5_fft(h5filepath, datalength=np.inf, sectionlength=8000):
     with h5py.File(h5filepath, 'r') as f:
-        if datalength==-1: datalength=len(f['cameradata']['arrays'])
+        datalength=min(len(f['cameradata']['arrays']), datalength)
         nsections = len(f['cameradata']['arrays'])//sectionlength
         imageshape = f['cameradata']['arrays'][0].shape
         
@@ -218,20 +263,21 @@ def windowed_fft(series, samplingrate, detrend='linear', winsize=8000):
     return p, freqs
     
 class parallelsummer:
-    def __init__(self, mask=None):
+    def __init__(self, mask=None, dims=2):
         self.mask = mask
-        #if len(self.mask.shape) == 2: self.mask = self.mask[:,:,np.newaxis]
+        self.dims = dims
+        self.cover = (mask==0)
+        if len(self.mask.shape) < dims or len(self.mask.shape) > dims+1: raise ValueError("Dimension and mask mismatch")
+        if len(self.mask.shape) == dims: self.mask = np.expand_dims(self.mask,-1)
         
     def findSectionSumsMasked(self, frame):
         '''See parallelSums'''
-        #return np.sum(frame[:,np.newaxis]*self.mask, axis=(0))
-        return np.sum(frame[:,:,np.newaxis]*self.mask, axis=(0,1))
-
-    def parallelSumsMasked_h5(self,h5filepath,datalength=-1):
+        return np.squeeze(np.apply_over_axes(np.sum, (np.expand_dims(frame, -1)/np.sum(frame))*self.mask, range(self.dims)))
+    def parallelSumsMasked_h5(self,h5filepath,datalength=np.inf):
         nums = []
 
         f = h5py.File(h5filepath, 'r')
-        if datalength==-1: datalength=len(f['cameradata']['arrays'])
+        datalength=min(len(f['cameradata']['arrays']), datalength)
         returnval=[]
 
         # ### parallel processing ###
@@ -243,10 +289,10 @@ class parallelsummer:
 
         return returnval
     
-    def parallelSumsMasked_array(self,arr,datalength=-1):
+    def parallelSumsMasked_array(self,arr,datalength=np.inf):
         nums = []
 
-        if datalength==-1: datalength=len(arr)
+        datalength=min(len(arr),datalength)
         returnval=[]
 
         # ### parallel processing ###
@@ -270,12 +316,14 @@ def generate_masks(xfile, yfile, frequency, blurred=True):
 def manual_leftinv(matrix):
     return np.matmul(np.linalg.inv(np.matmul(matrix.T, matrix)), matrix.T)
 
-def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True):
+def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True, xnormalized = True, ynormalized = True):
     shape = getimage0(xfile).shape
     if shape != getimage0(yfile).shape:
         raise ValueError("X File and Y file aren't the same shape")
     x1 = isolate_frequency(xfrequency, xfile)
+    if xnormalized: x1 = x1 / getnormscale(xfile)
     y1 = isolate_frequency(yfrequency, yfile)
+    if ynormalized: y1 = y1 / getnormscale(yfile)
     maps = np.squeeze(np.dstack((x1.flatten(), y1.flatten())))
     if real:
         maps = np.real(maps)
@@ -293,12 +341,12 @@ def calculate_snr(psd_vals, signal_values, maxval=None):
     mask[maxval:] = False
     return np.mean(psd_vals[0][signal_values])/np.mean(psd_vals[0][mask])
         
-def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, xvals=None, ylim=None, datalength=-1, plotname = None, electrons=9, plotbase=None, **plotargs):
+def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, xvals=None, ylim=None, datalength=np.inf, plotname = None, electrons=9, plotbase=None, dims=2, **plotargs):
     calib = [1,1]
     if xvals is not None:
         calib = force_calibration(masks, xfile, yfile, xbeadfile, ybeadfile, electrons=electrons, xvals=xvals, datalength=datalength)
         
-    par = parallelsummer(masks)
+    par = parallelsummer(masks, dims=dims)
     if zfile is not None:
         files = [xfile, yfile, zfile]
     else:
@@ -328,12 +376,12 @@ def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, 
         plt.savefig(plotname)
     return (fig, axs)
 
-def force_calibration(masks, xfile, yfile, xbeadfile, ybeadfile, electrons=9, xvals=np.arange(1,100), datalength=-1):
+def force_calibration(masks, xfile, yfile, xbeadfile, ybeadfile, electrons=9, xvals=np.arange(1,100), datalength=np.inf, dims=2):
     files = [xfile, yfile]
     force = get_driveforce(xbeadfile, ybeadfile, electrons=electrons, xvals = xvals)
     calib = [0,0]
     
-    par = parallelsummer(masks)
+    par = parallelsummer(masks, dims=dims)
     for i in range(2):
         vals = par.parallelSumsMasked_h5(files[i], datalength)
         samplingrate = getsamplingrate(files[i])
