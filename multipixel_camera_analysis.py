@@ -367,8 +367,13 @@ def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, 
             title = f"Response in {titles[i]} to drive in {titles[j]}"    
             make_scatterplot(fig, axs[i,j], data, title, xvals=xvals, ylim=ylim, **plotargs)
     
-    axs[0,0].set_ylabel(r'$\sqrt{S_x} [N/\sqrt{Hz}]$')
-    axs[1,0].set_ylabel(r'$\sqrt{S_y} [N/\sqrt{Hz}]$')
+    if calib == [1,1]:
+        axs[0,0].set_ylabel(r'$\sqrt{S_x} [Arb/\sqrt{Hz}]$')
+        axs[1,0].set_ylabel(r'$\sqrt{S_y} [Arb/\sqrt{Hz}]$')
+    else:
+        axs[0,0].set_ylabel(r'$\sqrt{S_x} [N/\sqrt{Hz}]$')
+        axs[1,0].set_ylabel(r'$\sqrt{S_y} [N/\sqrt{Hz}]$')
+    
     for j in range(len(files)):
         axs[-1,j].set_xlabel(r'$Freq [Hz]$')
         
