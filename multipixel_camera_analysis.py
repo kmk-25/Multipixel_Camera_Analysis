@@ -339,55 +339,33 @@ def windowed_fft(series, samplingrate, detrend='linear', winsize=8000):
 #Dims represents the dimensions of the array passed to the object; raw camera data is 2D, but subsetted camera data is 1D
 #The "mask" can also be multiple masks stacked along the last axis; in that case, all functions here will return an array with
 #the sums taken from each seperate mask.
-class parallelsummer:
-    def __init__(self, mask=None, dims=2):
-        self.mask = mask
-        self.dims = dims
-        self.cover = (mask==0)
-        
-        #Adds another dimension if the mask contains only one frame to apply 
-        if len(self.mask.shape) < dims or len(self.mask.shape) > dims+1: raise ValueError("Dimension and mask mismatch")
-        if len(self.mask.shape) == dims: self.mask = np.expand_dims(self.mask,-1)
-        
-    def findSectionSumsMasked(self, frame):
-        '''Parallel part of parallelSumsMasked'''
-        return np.squeeze(np.apply_over_axes(np.sum, (np.expand_dims(frame, -1)/np.sum(frame))*self.mask, range(self.dims)))
+
+
+def findSectionSumsMasked(frame, mask, dims):
+    '''Parallel part of parallelSumsMasked'''
+    return np.squeeze(np.apply_over_axes(np.sum, (np.expand_dims(frame, -1)/np.sum(frame))*mask, range(dims)))
+
+def parallelSumsMasked_h5(mask, h5filepath, datalength=np.inf, dims=2):
+    '''Given a filepath to an h5 file with camera data, returns the sum of each image
+    weighted by the maps defined in the parallelsummer object.'''
+    if len(mask.shape) < dims or len(mask.shape) > dims+1: raise ValueError("Dimension and mask mismatch")
+    if len(mask.shape) == dims: mask = np.expand_dims(mask,-1)
+    nums = []
+
+    sectionsum_specific = functools.partial(findSectionSumsMasked, mask=mask, dims=dims)
     
-    def parallelSumsMasked_h5(self,h5filepath,datalength=np.inf):
-        '''Given a filepath to an h5 file with camera data, returns the sum of each image
-        weighted by the maps defined in the parallelsummer object.'''
-        nums = []
+    f = h5py.File(h5filepath, 'r')
+    datalength=min(len(f['cameradata']['arrays']), datalength)
+    returnval=[]
 
-        f = h5py.File(h5filepath, 'r')
-        datalength=min(len(f['cameradata']['arrays']), datalength)
-        returnval=[]
+    # ### parallel processing ###
+    pool = multiprocessing.Pool(processes=6, \
+            initializer=start_process, maxtasksperchild=50)
+    returnval = pool.starmap(sectionsum_specific, zip(f['cameradata']['arrays'][:datalength]))
+    pool.close()
+    f.close()
 
-        # ### parallel processing ###
-        pool = multiprocessing.Pool(processes=6, \
-                initializer=start_process, maxtasksperchild=50)
-        returnval = pool.starmap(self.findSectionSumsMasked, zip(f['cameradata']['arrays'][:datalength]))
-        pool.close()
-        f.close()
-
-        return returnval
-    
-    def parallelSumsMasked_array(self,arr,datalength=np.inf):
-        '''Given a numpy array of camera data, returns the sum of each image
-        weighted by the maps defined in the parallelsummer object.'''
-        nums = []
-
-        datalength=min(len(arr),datalength)
-        returnval=[]
-
-        # ### parallel processing ###
-        pool = multiprocessing.Pool(processes=6, \
-                initializer=start_process, maxtasksperchild=50)
-        returnval = pool.starmap(self.findSectionSumsMasked, zip(arr))
-        pool.close()
-        return returnval
-    
-    def set_mask(self, mask):
-        self.mask = mask   
+    return returnval
         
 def generate_masks(xfile, yfile, xfrequency, yfrequency, blurred=True):
     '''Given an x file, a y file, and a frequency for each, converts the
@@ -395,8 +373,6 @@ def generate_masks(xfile, yfile, xfrequency, yfrequency, blurred=True):
     
     Output:
         The x and y maps as a numpy array stacked along the last axis'''
-    
-    
     
     xmap = np.angle(isolate_frequency(xfrequency, xfile))
     ymap = np.angle(isolate_frequency(yfrequency, yfile))
