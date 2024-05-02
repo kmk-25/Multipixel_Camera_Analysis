@@ -147,13 +147,13 @@ def h5_fft(h5filepath, datalength=np.inf, sectionlength=8000):
         #Dividing by nsections allows us to get the average with a simple sum.
         fft_transf=np.fft.rfft(f['cameradata']['arrays'][:sectionlength], axis=0)/nsections
         bigpixel_phase = fft_transf[index_slice]/np.abs(fft_transf[index_slice])
-        fft_transf /= bigpixel_phase[:,np.newaxis, np.newaxis]
+        fft_transf /= bigpixel_phase[tuple([slice(None)]+[np.newaxis]*len(imageshape))]
         
         #splits the data into sections, takes the fft of each, and averages.
         for i in range(1,nsections):
             temp = np.fft.rfft(f['cameradata']['arrays'][i*sectionlength:(i+1)*sectionlength], axis=0)/nsections
             bigpixel_phase = temp[index_slice]/np.abs(temp[index_slice])
-            fft_transf += temp/bigpixel_phase[:,np.newaxis,np.newaxis]
+            fft_transf += temp/bigpixel_phase[tuple([slice(None)]+[np.newaxis]*len(imageshape))]
             
         #calculates and returns numpy fft frequency conventions for sampling rate and section length
         samplingrate_transf = np.round(f['auxdata']['samplingrate'][()])
@@ -332,27 +332,30 @@ def windowed_fft(series, samplingrate, detrend='linear', winsize=8000):
         p = np.sqrt(2)/(S_1)*np.abs(spectrum)
         avgpsd += p/len(sections)
     return avgpsd, freqs
-    
-#Note: the following code is structured the way it is because it uses class hierarchy to pass consistent values to starmap.
-#This is not the most effective approach, and will be changed.
-
-#Dims represents the dimensions of the array passed to the object; raw camera data is 2D, but subsetted camera data is 1D
-#The "mask" can also be multiple masks stacked along the last axis; in that case, all functions here will return an array with
-#the sums taken from each seperate mask.
 
 
-def findSectionSumsMasked(frame, mask, dims):
+def findSectionSumsMasked(frame, mask, dims, normalize):
     '''Parallel part of parallelSumsMasked'''
-    return np.squeeze(np.apply_over_axes(np.sum, (np.expand_dims(frame, -1)/np.sum(frame))*mask, range(dims)))
+    if normalize:
+        return np.squeeze(np.apply_over_axes(np.sum, (np.expand_dims(frame, -1)/np.sum(frame))*mask, range(dims)))
+    else:
+        return np.squeeze(np.apply_over_axes(np.sum, (np.expand_dims(frame, -1))*mask, range(dims)))
 
-def parallelSumsMasked_h5(mask, h5filepath, datalength=np.inf, dims=2):
-    '''Given a filepath to an h5 file with camera data, returns the sum of each image
-    weighted by the maps defined in the parallelsummer object.'''
+def parallelSumsMasked_h5(mask, h5filepath, datalength=np.inf, dims=2, normalize=True):
+    '''Given a weight map and a filepath to an h5 file with camera data, 
+    returns the sum of each image weighted by the given map.
+    
+    Inputs:
+        Mask: the mask to use when summing over the image
+        h5filepath: filepath to camera data being summed over
+        datalength: number of frames to sum over
+        dims: number of dimensions in each frame (default: 2)
+            Note: this is 2 for unmodified camera data, and 1 for subset camera data'''
     if len(mask.shape) < dims or len(mask.shape) > dims+1: raise ValueError("Dimension and mask mismatch")
     if len(mask.shape) == dims: mask = np.expand_dims(mask,-1)
     nums = []
 
-    sectionsum_specific = functools.partial(findSectionSumsMasked, mask=mask, dims=dims)
+    sectionsum_specific = functools.partial(findSectionSumsMasked, mask=mask, dims=dims, normalize=normalize)
     
     f = h5py.File(h5filepath, 'r')
     datalength=min(len(f['cameradata']['arrays']), datalength)
@@ -436,7 +439,7 @@ def calculate_snr(psd_vals, signal_values, maxval=None):
     mask[maxval:] = False
     return np.mean(psd_vals[0][signal_values])/np.mean(psd_vals[0][mask])
         
-def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, xvals=None, ylim=None, datalength=np.inf, filepath = None, electrons=9, plotbase=None, dims=2, **plotargs):
+def makeTransferFuncPlot(masks, xfile, yfile, zfile=None, xvals=None, ylim=None, datalength=np.inf, filepath = None, normscale = [1,1], electrons=9, plotbase=None, dims=2, **plotargs):
     '''Plots a transfer function from x, y, and optionally z camera files. Optionally save the file to a given filepath
     If frequencies are specified, only those frequencies will be shown, and the transfer functions will be converted to
     force units based on those files
@@ -445,8 +448,6 @@ def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, 
         xfile (string): filepath of h5 file with camera data for x transfer data
         yfile (string): filepath of h5 file with camera data for y transfer data
         zfile (string): filepath of h5 file with camera data for z transfer data (default None)
-        xbeadfile (string): filepath of h5 file with bead data for x transfer data
-        ybeadfile (string): filepath of h5 file with bead data for y transfer data
         
         ylim: y limits of plots (default None)
         datalength (int): maximum number of frames to keep from the camera datasets (default infinity)
@@ -462,12 +463,6 @@ def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, 
         (fig, axs): figure and axes for plot
         '''
     
-    #Calculates force calibration if xvals specified
-    calib = [1,1]
-    if xvals is not None:
-        calib = force_calibration(masks, xfile, yfile, xbeadfile, ybeadfile, electrons=electrons, xvals=xvals, datalength=datalength)
-      
-    par = parallelsummer(masks, dims=dims)
     if zfile is not None:
         files = [xfile, yfile, zfile]
     else:
@@ -482,16 +477,16 @@ def makeTransferFuncPlot(masks, xfile, yfile, xbeadfile, ybeadfile, zfile=None, 
     
     for j in range(len(files)):
         #Gets x/y map weighted sums for each file 
-        vals = par.parallelSumsMasked_h5(files[j], datalength)
+        vals = parallelSumsMasked_h5(masks, files[j], datalength=datalength,dims=dims)
         samplingrate = getsamplingrate(files[j])
         for i in range(2):
             #Splits x/y measurements, calculates/plots psd
-            data = windowed_psd(np.abs(np.array(vals)[:,i])*calib[i], samplingrate, winsize=int(samplingrate*10))
+            data = windowed_psd(np.abs(np.array(vals)[:,i])*normscale[i], samplingrate, winsize=int(samplingrate*10))
             title = f"Response in {titles[i]} to drive in {titles[j]}"    
             make_scatterplot(fig, axs[i,j], data, title, xvals=xvals, ylim=ylim, **plotargs)
     
     #Ensures y axis is properly labeled with force units or arbitrary
-    if calib == [1,1]:
+    if normscale == [1,1]:
         axs[0,0].set_ylabel(r'$\sqrt{S_x} [Arb/\sqrt{Hz}]$')
         axs[1,0].set_ylabel(r'$\sqrt{S_y} [Arb/\sqrt{Hz}]$')
     else:
@@ -525,9 +520,8 @@ def force_calibration(masks, xfile, yfile, xbeadfile, ybeadfile, electrons=9, xv
     force = get_driveforce(xbeadfile, ybeadfile, electrons=electrons, xvals = xvals)
     
     #Calculates force from camera data as mean fft over all tested frequencies
-    par = parallelsummer(masks, dims=dims)
     for i in range(2):
-        vals = par.parallelSumsMasked_h5(files[i], datalength)
+        vals = parallelSumsMasked_h5(masks, files[i], datalength=datalength, dims=dims)
         samplingrate = getsamplingrate(files[i])
         data = windowed_fft(np.abs(np.array(vals)[:,i]), samplingrate, winsize=int(samplingrate*10)) 
         indices = findclosestoset(data[1], xvals)
