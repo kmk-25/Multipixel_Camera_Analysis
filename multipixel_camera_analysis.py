@@ -551,3 +551,48 @@ def get_driveforce(xfile, yfile, electrons=9, xvals = np.arange(1,100)):
     xforce_avg = np.mean(xforce_amp[0][indices])
     yforce_avg = np.mean(yforce_amp[0][indices])
     return (xforce_avg, yforce_avg)
+
+def findSectionSums(frame, gridsize):
+    '''See parallelSums'''
+    imageshape = frame.shape
+
+    #making the edges for the grid on the image
+    xleft = [imageshape[1]//gridsize[1] * i for i in range(gridsize[1])]
+    xright = [imageshape[1]//gridsize[1] * i for i in range(1,gridsize[1])]
+    xright.append(-1)
+    ytop = [imageshape[0]//gridsize[0] * i for i in range(gridsize[0])]
+    ybottom = [imageshape[0]//gridsize[0] * i for i in range(1,gridsize[0])]
+    ybottom.append(-1)
+
+    #computing the sum of each section and returning a list
+    sumlist = [np.sum(np.sum(frame[ytop[j]:ybottom[j],xleft[i]:xright[i]])) for j in range(gridsize[0]) for i in range(gridsize[1])]
+    return np.reshape(np.array(sumlist), (gridsize[0], gridsize[1]))
+
+def parallelSums(h5filepath,gridsize,datalength=-1):
+    '''Given a camera dataset, this function splits it into a grid of sections and computes the sum
+    of all pixels in each section for each frame. Returns a list with an element for each frame, with
+    each element being an '''
+    f = h5py.File(h5filepath, 'r')
+    if datalength==-1: datalength=len(f['cameradata']['arrays'])
+    returnval=[]
+    
+    sectionsums_specific = functools.partial(findSectionSums, gridsize=gridsize)
+    
+    # ### parallel processing ###
+    pool = multiprocessing.Pool(processes=6, \
+            initializer=start_process, maxtasksperchild=50)
+    returnval = pool.starmap(sectionsums_specific, zip(f['cameradata']['arrays'][:datalength]))
+    f.close()
+    
+    return returnval
+
+def parallelSums_file(h5filepath_in,gridsize,h5filepath_out,datalength=-1):
+    '''Performs parallelSums on the h5 file h5filepath_in, then saves the results to the h5 file
+    h5filepath_out'''
+    sourcefile = h5py.File(h5filepath_in, 'r')
+    targetfile = h5py.File(h5filepath_out, 'w')
+    targetfile.create_group("auxdata")
+    targetfile.create_dataset("auxdata/samplingrate", data=sourcefile['auxdata']['samplingrate'][()])
+    sourcefile.close()
+    targetfile.create_group("cameradata")
+    targetfile.create_dataset("cameradata/arrays", data=parallelSums(h5filepath_in, gridsize, datalength=datalength))
