@@ -552,9 +552,13 @@ def get_driveforce(xfile, yfile, electrons=9, xvals = np.arange(1,100)):
     yforce_avg = np.mean(yforce_amp[0][indices])
     return (xforce_avg, yforce_avg)
 
-def findSectionSums(frame, gridsize):
+def findSectionSums(frame, gridsize, expandfrom1D, expandmap):
     '''See parallelSums'''
     imageshape = frame.shape
+    
+    if expandfrom1D:
+        frame = expand_fromsubset(frame, expandmap)
+        imageshape = expandmap.shape
 
     #making the edges for the grid on the image
     xleft = [imageshape[1]//gridsize[1] * i for i in range(gridsize[1])]
@@ -568,7 +572,7 @@ def findSectionSums(frame, gridsize):
     sumlist = [np.sum(np.sum(frame[ytop[j]:ybottom[j],xleft[i]:xright[i]])) for j in range(gridsize[0]) for i in range(gridsize[1])]
     return np.reshape(np.array(sumlist), (gridsize[0], gridsize[1]))
 
-def parallelSums(h5filepath,gridsize,datalength=-1):
+def parallelSectionSums(h5filepath,gridsize, expandfrom1D = False,datalength=-1):
     '''Given a camera dataset, this function splits it into a grid of sections and computes the sum
     of all pixels in each section for each frame. Returns a list with an element for each frame, with
     each element being an '''
@@ -576,7 +580,13 @@ def parallelSums(h5filepath,gridsize,datalength=-1):
     if datalength==-1: datalength=len(f['cameradata']['arrays'])
     returnval=[]
     
-    sectionsums_specific = functools.partial(findSectionSums, gridsize=gridsize)
+    
+    if expandfrom1D: 
+        expandmap = f['auxdata']['subsetmap'][()]
+    else:
+        expandmap = None
+    
+    sectionsums_specific = functools.partial(findSectionSums, gridsize=gridsize, expandfrom1D=expandfrom1D, expandmap=expandmap)
     
     # ### parallel processing ###
     pool = multiprocessing.Pool(processes=6, \
@@ -586,7 +596,7 @@ def parallelSums(h5filepath,gridsize,datalength=-1):
     
     return returnval
 
-def parallelSums_file(h5filepath_in,gridsize,h5filepath_out,datalength=-1):
+def parallelSectionSums_file(h5filepath_in,gridsize,h5filepath_out,expandfrom1D=False,datalength=-1):
     '''Performs parallelSums on the h5 file h5filepath_in, then saves the results to the h5 file
     h5filepath_out'''
     sourcefile = h5py.File(h5filepath_in, 'r')
@@ -595,4 +605,4 @@ def parallelSums_file(h5filepath_in,gridsize,h5filepath_out,datalength=-1):
     targetfile.create_dataset("auxdata/samplingrate", data=sourcefile['auxdata']['samplingrate'][()])
     sourcefile.close()
     targetfile.create_group("cameradata")
-    targetfile.create_dataset("cameradata/arrays", data=parallelSums(h5filepath_in, gridsize, datalength=datalength))
+    targetfile.create_dataset("cameradata/arrays", data=parallelSectionSums(h5filepath_in, gridsize, datalength=datalength,expandfrom1D=expandfrom1D))
