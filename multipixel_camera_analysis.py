@@ -48,8 +48,6 @@ def getimage0(h5filepath):
         image0 = f['cameradata']['arrays'][0]
     return image0
 
-
-
 def subsetframe(sourcedata, frame, normalize, normalfactor):
     '''Multithreaded function used in multisubset'''
     if normalize:
@@ -135,7 +133,7 @@ def h5_fft(h5filepath, datalength=np.inf, sectionlength=8000):
         tuple[array] with the fft frequencies and the fft data'''
     with h5py.File(h5filepath, 'r') as f:
         datalength=min(len(f['cameradata']['arrays']), datalength)
-        nsections = len(f['cameradata']['arrays'])//sectionlength
+        nsections = datalength//sectionlength
         imageshape = f['cameradata']['arrays'][0].shape
         
         #index represents the xy coordinate of the pixel with greatest magnitude in the first image.
@@ -160,7 +158,7 @@ def h5_fft(h5filepath, datalength=np.inf, sectionlength=8000):
         freqs_transf = np.fft.rfftfreq(sectionlength, 1/samplingrate_transf)
     return freqs_transf, fft_transf
 
-def isolate_frequency(target_frequency, full_fft, sectionlength=8000):
+def isolate_frequency(full_fft, target_frequency, sectionlength=8000):
     '''Uses h5_fft (or an existing fft data result) to return each pixels fft data
     at a given frequency.
     Inputs:
@@ -173,20 +171,24 @@ def isolate_frequency(target_frequency, full_fft, sectionlength=8000):
     return full_fft[1][target_index]
 
 def singlefreq_fourier(h5filepath, frequency, hz=True, datalength=np.inf):
-    '''(DEPRECATED) Test to speed up calculating one frequency at a time instead of
-    subsetting from the full fft. No significant speedups found. Likely areas for efficieny
-    improvement if this becomes a part of future analysis.'''
+    '''Test to speed up calculating one frequency at a time instead of
+    subsetting from the full fft. No significant speedups found, but it does save memory. 
+    Likely areas for efficiency improvement if this becomes a part of future analysis.'''
     if hz: frequency = frequency*2*np.pi
     with h5py.File(h5filepath, 'r') as f:
         samplingrate = f['auxdata']['samplingrate'][()]
         deltatime = 1/samplingrate
-        counter = np.zeros(f['cameradata']['arrays'][0].shape, dtype='complex128')
+        im0 = f['cameradata']['arrays'][0]
+        index = np.unravel_index(np.argmax(im0), im0.shape)
+        counter = np.zeros(im0.shape, dtype='complex128')
         datalength = min(datalength, len(f['cameradata']['arrays']))
         
         #Probably don't need to load entire file into memory
         for n, val in enumerate(f['cameradata']['arrays'][:datalength]):
             counter += val*np.exp(-1j*deltatime*frequency*n)
-    return counter
+            
+        bigpixel_phase = counter[index]/np.abs(counter[index])
+    return counter/bigpixel_phase
 
 def custom_cmap():
     '''Wrapper for a custom color map that matches the seismic color map, but has low and high values as the same color. Intended for plotting frequency maps.'''
@@ -377,8 +379,9 @@ def generate_masks(xfile, yfile, xfrequency, yfrequency, blurred=True):
     Output:
         The x and y maps as a numpy array stacked along the last axis'''
     
-    xmap = np.angle(isolate_frequency(xfrequency, xfile))
-    ymap = np.angle(isolate_frequency(yfrequency, yfile))
+    xmap = np.angle(isolate_frequency(xfile, xfrequency))
+    ymap = np.angle(isolate_frequency(yfile, yfrequency))
+    
     if blurred:
         xmap = phase_to_mask(xmap)
         ymap = phase_to_mask(ymap)
@@ -411,9 +414,9 @@ def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True, xno
         raise ValueError("X File and Y file aren't the same shape")
         
     #Get x and y frequency responses at target frequencies
-    x1 = isolate_frequency(xfrequency, xfile)
+    x1 = isolate_frequency(xfile, xfrequency)
     if xnormalized: x1 = x1 / getnormscale(xfile)
-    y1 = isolate_frequency(yfrequency, yfile)
+    y1 = isolate_frequency(yfile, yfrequency)
     if ynormalized: y1 = y1 / getnormscale(yfile)
     
     #Turns the maps into a nx2 matrix, then calculate the left inverse
