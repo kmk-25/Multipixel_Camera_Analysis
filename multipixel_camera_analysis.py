@@ -170,7 +170,7 @@ def isolate_frequency(full_fft, target_frequency, sectionlength=8000):
     target_index = findclosestoset(full_fft[0], [target_frequency])[0]
     return full_fft[1][target_index]
 
-def singlefreq_fourier(h5filepath, frequency, hz=True, datalength=np.inf):
+def singlefreq_fourier(h5filepath, frequency, hz=True, datalength=np.inf, normalized=True):
     '''Test to speed up calculating one frequency at a time instead of
     subsetting from the full fft. No significant speedups found, but it does save memory. 
     Likely areas for efficiency improvement if this becomes a part of future analysis.'''
@@ -185,7 +185,8 @@ def singlefreq_fourier(h5filepath, frequency, hz=True, datalength=np.inf):
         
         #Probably don't need to load entire file into memory
         for n, val in enumerate(f['cameradata']['arrays'][:datalength]):
-            counter += val*np.exp(-1j*deltatime*frequency*n)
+            if normalized: counter += val*np.exp(-1j*deltatime*frequency*n)/np.abs(val)
+            else: counter += val*np.exp(-1j*deltatime*frequency*n)
             
         bigpixel_phase = counter[index]/np.abs(counter[index])
     return counter/bigpixel_phase
@@ -414,9 +415,11 @@ def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True, xno
         raise ValueError("X File and Y file aren't the same shape")
         
     #Get x and y frequency responses at target frequencies
-    x1 = isolate_frequency(xfile, xfrequency)
+    #x1 = isolate_frequency(xfile, xfrequency)
+    x1 = singlefreq_fourier(xfile, xfrequency)
     if xnormalized: x1 = x1 / getnormscale(xfile)
-    y1 = isolate_frequency(yfile, yfrequency)
+    #y1 = isolate_frequency(yfile, yfrequency)
+    y1 = singlefreq_fourier(yfile, yfrequency)
     if ynormalized: y1 = y1 / getnormscale(yfile)
     
     #Turns the maps into a nx2 matrix, then calculate the left inverse
