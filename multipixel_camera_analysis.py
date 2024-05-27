@@ -185,7 +185,7 @@ def singlefreq_fourier(h5filepath, frequency, hz=True, datalength=np.inf, normal
         
         #Probably don't need to load entire file into memory
         for n, val in enumerate(f['cameradata']['arrays'][:datalength]):
-            if normalized: counter += val*np.exp(-1j*deltatime*frequency*n)/np.abs(val)
+            if normalized: counter += val*np.exp(-1j*deltatime*frequency*n)/np.sum(val)
             else: counter += val*np.exp(-1j*deltatime*frequency*n)
             
         bigpixel_phase = counter[index]/np.abs(counter[index])
@@ -415,11 +415,11 @@ def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True, xno
         raise ValueError("X File and Y file aren't the same shape")
         
     #Get x and y frequency responses at target frequencies
-    #x1 = isolate_frequency(xfile, xfrequency)
-    x1 = singlefreq_fourier(xfile, xfrequency)
+    x1 = isolate_frequency(xfile, xfrequency)
+    #x1 = singlefreq_fourier(xfile, xfrequency)
     if xnormalized: x1 = x1 / getnormscale(xfile)
-    #y1 = isolate_frequency(yfile, yfrequency)
-    y1 = singlefreq_fourier(yfile, yfrequency)
+    y1 = isolate_frequency(yfile, yfrequency)
+    #y1 = singlefreq_fourier(yfile, yfrequency)
     if ynormalized: y1 = y1 / getnormscale(yfile)
     
     #Turns the maps into a nx2 matrix, then calculate the left inverse
@@ -487,7 +487,7 @@ def makeTransferFuncPlot(masks, xfile, yfile, zfile=None, xvals=None, ylim=None,
         samplingrate = getsamplingrate(files[j])
         for i in range(2):
             #Splits x/y measurements, calculates/plots psd
-            data = windowed_psd(np.abs(np.array(vals)[:,i])*normscale[i], samplingrate, winsize=int(samplingrate*10))
+            data = windowed_psd(np.array(vals)[:,i]*normscale[i], samplingrate, winsize=int(samplingrate*10))
             title = f"Response in {titles[i]} to drive in {titles[j]}"    
             make_scatterplot(fig, axs[i,j], data, title, xvals=xvals, ylim=ylim, **plotargs)
     
@@ -529,7 +529,7 @@ def force_calibration(masks, xfile, yfile, xbeadfile, ybeadfile, electrons=9, xv
     for i in range(2):
         vals = parallelSumsMasked_h5(masks, files[i], datalength=datalength, dims=dims)
         samplingrate = getsamplingrate(files[i])
-        data = windowed_fft(np.abs(np.array(vals)[:,i]), samplingrate, winsize=int(samplingrate*10)) 
+        data = windowed_fft(np.array(vals)[:,i], samplingrate, winsize=int(samplingrate*10)) 
         indices = findclosestoset(data[1], xvals)
         calib[i] = force[i]/np.mean(data[0][indices])
     return calib
