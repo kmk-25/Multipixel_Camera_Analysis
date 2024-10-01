@@ -5,7 +5,10 @@ from matplotlib.colors import LinearSegmentedColormap
 import matplotlib.pyplot as plt
 import scipy
 import functools
+from joblib import Parallel, delayed
 from BeadDataFile import *
+
+ncores=6
 
 def start_process():
     '''Function ran when starting new multithreading processes'''
@@ -89,8 +92,6 @@ def multisubset(sourcefilename, targetfilename, frame, datalength = np.inf, norm
     subsetframe_specific = functools.partial(subsetframe, frame=frame, normalize=normalize, normalfactor=scale)
     
     returnval=[]
-    pool = multiprocessing.Pool(processes=6,
-                initializer=start_process, maxtasksperchild=50)
     
     #Try-Except loop ensures everything closes properly if code fails
     try:
@@ -101,15 +102,10 @@ def multisubset(sourcefilename, targetfilename, frame, datalength = np.inf, norm
         targetfile.create_dataset("auxdata/normalizationscale", data=scale)
         im0_test = sourcefile['cameradata']['arrays'][0][frame]
         targetfile.create_group("cameradata")
-        targetfile.create_dataset("cameradata/arrays", data=pool.starmap(subsetframe_specific, zip(sourcefile['cameradata']['arrays'][:datalength])))
-    except:  
-        pool.close()
+        targetfile.create_dataset("cameradata/arrays", data=Parallel(n_jobs=ncores)(delayed(sectionsum_specific)(i) for i in sourcefile['cameradata']['arrays'][:datalength]))
+    finally:  
         sourcefile.close()
         targetfile.close()
-        raise
-    pool.close()
-    sourcefile.close()
-    targetfile.close()
 
 def expand_fromsubset(vector, subsetmap):
     '''Given a 1D array of values, and a boolean array corresponding to a subset map, returns a
@@ -204,9 +200,9 @@ def make_angleplot(fig, ax, arr, title, mask=None):
         title (string): title of graph
         mask (array[float]): alpha mask to overlay over image'''
     if mask is not None:
-        color_map_overlay = ax.imshow(arr, cmap=custom_cmap(), alpha=mask/np.max(mask))
+        color_map_overlay = ax.imshow(arr, cmap=custom_cmap(), vmin=-np.pi,vmax=np.pi,alpha=mask/np.max(mask))
     else:
-        color_map_overlay = ax.imshow(arr, cmap=custom_cmap(), alpha=1)
+        color_map_overlay = ax.imshow(arr, cmap=custom_cmap(), vmin=-np.pi,vmax=np.pi,alpha=1)
     cbar = fig.colorbar(color_map_overlay, cmap=custom_cmap, ticks=[-np.pi, -np.pi/2, 0, np.pi/2, np.pi])
     cbar.ax.set_yticklabels([r'$-\pi$', r'$\frac{\pi}{2}$', '0', r'$\frac{\pi}{2}$', r'$\pi$'])
     cbar.ax.set_ylabel("complex phase")
@@ -365,10 +361,7 @@ def parallelSumsMasked_h5(mask, h5filepath, datalength=np.inf, dims=2, normalize
     returnval=[]
 
     # ### parallel processing ###
-    pool = multiprocessing.Pool(processes=6, \
-            initializer=start_process, maxtasksperchild=50)
-    returnval = pool.starmap(sectionsum_specific, zip(f['cameradata']['arrays'][:datalength]))
-    pool.close()
+    returnval = Parallel(n_jobs=ncores)(delayed(sectionsum_specific)(i) for i in f['cameradata']['arrays'][:datalength])
     f.close()
 
     return returnval
@@ -595,9 +588,7 @@ def parallelSectionSums(h5filepath,gridsize, expandfrom1D = False,datalength=-1)
     sectionsums_specific = functools.partial(findSectionSums, gridsize=gridsize, expandfrom1D=expandfrom1D, expandmap=expandmap)
     
     # ### parallel processing ###
-    pool = multiprocessing.Pool(processes=6, \
-            initializer=start_process, maxtasksperchild=50)
-    returnval = pool.starmap(sectionsums_specific, zip(f['cameradata']['arrays'][:datalength]))
+    returnval = Parallel(n_jobs=ncores)(delayed(sectionsums_specific)(i) for i in f['cameradata']['arrays'][:datalength])
     f.close()
     
     return returnval
