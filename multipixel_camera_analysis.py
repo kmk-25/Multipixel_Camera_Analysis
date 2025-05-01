@@ -68,6 +68,9 @@ def subsetframe(sourcedata, frame, normalize, normalfactor):
     else:
         return sourcedata[frame]
     
+def newendaxes(dims):
+    return tuple([slice(None)]+[np.newaxis]*dims)
+    
 def multisubset(sourcefilename, targetfilename, frame, datalength = np.inf, normalize=True):
     '''Given a source h5 file, and an array of boolean values corresponding to the image shape,
     creates a new h5 file at a given file path only containing the pixels corresponding to true
@@ -125,7 +128,8 @@ def expand_fromsubset(vector, subsetmap):
     outp[subsetmap] = vector
     return outp
 
-def h5_fft(h5filepath, datalength=np.inf, sectionlength=8000,phasepixel=None):
+def h5_fft(h5filepath, datarange=(0,np.inf), sectionlength=8000,phasepixel=None, \
+           usewindow=False, normalize = True, roi=None):
     '''Given a filepath to an h5 file with camera data, takes the fft of each
     individual pixel. It does this by splitting into smaller sections to ease
     processing strain; default is 10 seconds by convention.
@@ -138,13 +142,37 @@ def h5_fft(h5filepath, datalength=np.inf, sectionlength=8000,phasepixel=None):
     Output:
         tuple[array] with the fft frequencies and the fft data'''
     with h5py.File(h5filepath, 'r') as f:
+        datastart, datalength = datarange
         datalength=min(len(f['cameradata']['arrays']), datalength)
-        nsections = datalength//sectionlength
+        datastart = max(datastart,0)
+        nsections = (datalength-datastart)//sectionlength
         imageshape = f['cameradata']['arrays'][0].shape
+        dims = len(imageshape)
         
+        if roi:
+            roi = np.reshape(np.array(roi), (-1,2))
+            roi = tuple([slice(roidim[0], roidim[1]) for roidim in roi])
+        else:
+            roi = tuple([slice(None)]*(dims))
+        roi = tuple([slice(None)]) + roi
+        
+        
+        if usewindow:
+            win = scipy.signal.windows.tukey(sectionlength, 0.05)
+            S_1 = np.sum(win)
+            S_2 = np.sum(win**2)
+            
         #calculate fft, then divide by phase of index pixel. 
         #Dividing by nsections allows us to get the average with a simple sum.
-        fft_transf=np.fft.rfft(f['cameradata']['arrays'][:sectionlength], axis=0)*np.sqrt(2)/(sectionlength*nsections)
+        dat = f['cameradata']['arrays'][datastart:(datastart+sectionlength)][roi].astype(np.float64)
+        
+        if normalize:
+            dat /= np.sum(dat, axis=tuple(np.arange(1,len(imageshape)+1)))[newendaxes(dims)]
+        if usewindow:
+            dat -= np.mean(dat, axis=0)
+            dat *= win[newendaxes(dims)]
+        fft_transf=np.fft.rfft(dat, axis=0)*np.sqrt(2)/(sectionlength*nsections)
+        del dat
         
         #index represents the xy coordinate of the pixel with greatest magnitude in frequency space at index 1.
         #it is arbitrarily chosen to normalize the phase
@@ -154,13 +182,25 @@ def h5_fft(h5filepath, datalength=np.inf, sectionlength=8000,phasepixel=None):
         
         
         bigpixel_phase = fft_transf[index_slice]/np.abs(fft_transf[index_slice])
-        fft_transf /= bigpixel_phase[tuple([slice(None)]+[np.newaxis]*len(imageshape))]
+        fft_transf /= bigpixel_phase[newendaxes(dims)]
         
         #splits the data into sections, takes the fft of each, and averages.
         for i in range(1,nsections):
-            temp = np.fft.rfft(f['cameradata']['arrays'][i*sectionlength:(i+1)*sectionlength], axis=0)*np.sqrt(2)/(sectionlength*nsections)
+            dat = f['cameradata']['arrays'][datastart:(datastart+sectionlength)][roi]
+            if normalize:
+                dat /= np.sum(dat, axis=tuple(np.arange(1,len(imageshape)+1)))[newendaxes(dims)]
+            if usewindow:
+                dat -= np.mean(dat, axis=0)
+                dat *= win[newendaxes(dims)]
+                dat /= S_1
+            else:
+                dat /= sectionlength
+                
+            temp=np.fft.rfft(dat, axis=0)*np.sqrt(2)/(nsections)
+            del dat
+            
             bigpixel_phase = temp[index_slice]/np.abs(temp[index_slice])
-            fft_transf += temp/bigpixel_phase[tuple([slice(None)]+[np.newaxis]*len(imageshape))]
+            fft_transf += temp/bigpixel_phase[newendaxes(dims)]
             
         #calculates and returns numpy fft frequency conventions for sampling rate and section length
         samplingrate_transf = np.round(f['auxdata']['samplingrate'][()])
@@ -346,14 +386,14 @@ def windowed_fft(series, samplingrate, detrend='linear', winsize=8000):
     return avgpsd, freqs
 
 
-def findSectionSumsMasked(frame, mask, dims, normalize):
+def findSectionSumsMasked(frame, mask, dims, normalize, roi):
     '''Parallel part of parallelSumsMasked'''
     if normalize:
-        return np.squeeze(np.apply_over_axes(np.sum, (np.expand_dims(frame, -1)/np.sum(frame))*mask, range(dims)))
+        return np.squeeze(np.apply_over_axes(np.sum, (np.expand_dims(frame[roi], -1)/np.sum(frame[roi]))*mask, range(dims)))
     else:
-        return np.squeeze(np.apply_over_axes(np.sum, (np.expand_dims(frame, -1))*mask, range(dims)))
+        return np.squeeze(np.apply_over_axes(np.sum, (np.expand_dims(frame[roi], -1))*mask, range(dims)))
 
-def parallelSumsMasked_h5(mask, h5filepath, datalength=np.inf, dims=2, normalize=True):
+def parallelSumsMasked_h5(mask, h5filepath, datasection=(0,np.inf), dims=2, normalize=True, subset=None, roi=None):
     '''Given a weight map and a filepath to an h5 file with camera data, 
     returns the sum of each image weighted by the given map.
     
@@ -366,15 +406,25 @@ def parallelSumsMasked_h5(mask, h5filepath, datalength=np.inf, dims=2, normalize
     if len(mask.shape) < dims or len(mask.shape) > dims+1: raise ValueError("Dimension and mask mismatch")
     if len(mask.shape) == dims: mask = np.expand_dims(mask,-1)
     nums = []
+    
+    datastart, datalength = datasection
+    
+    if roi:
+        roi = np.reshape(np.array(roi), (-1,2))
+        roi = tuple([slice(roidim[0], roidim[1]) for roidim in roi])
+    else:
+        roi = tuple([slice(None)]*(dims))
+    
 
-    sectionsum_specific = functools.partial(findSectionSumsMasked, mask=mask, dims=dims, normalize=normalize)
+    sectionsum_specific = functools.partial(findSectionSumsMasked, mask=mask, dims=dims, normalize=normalize, roi=roi)
     
     f = h5py.File(h5filepath, 'r')
     datalength=min(len(f['cameradata']['arrays']), datalength)
+    datastart=max(0,datastart)
     returnval=[]
 
     # ### parallel processing ###
-    returnval = Parallel(n_jobs=ncores)(delayed(sectionsum_specific)(i) for i in f['cameradata']['arrays'][:datalength])
+    returnval = Parallel(n_jobs=ncores)(delayed(sectionsum_specific)(i) for i in f['cameradata']['arrays'][datastart:datalength])
     f.close()
 
     return returnval
@@ -417,7 +467,7 @@ def generate_quad_masks(shape):
     yquadmap[:shape[0]//2, :] = -1
     return np.dstack((xquadmap,yquadmap))
 
-def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True, xnormalized = True, ynormalized = True, datalength=np.inf, roi=None):
+def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True, xnormalized = True, ynormalized = True, datalength=np.inf):
     '''Given an x file, a y file, and a frequency for each, generates maps from the diagonalization procedure
     shown here https://grattalab.com/elog/optlev/2024/04/25/applying-diagonalization-maps-to-11-27-camera-data/
     Inputs:
@@ -566,7 +616,7 @@ def get_driveforce(xfile, yfile, electrons=9, xvals = np.arange(1,100)):
     xdrive_force = xdrive_efield*scipy.constants.e*electrons
     ydrive_force = ydrive_efield*scipy.constants.e*electrons
 
-    #Using 10 seconds at QPD sampling rate of 5 kHz
+    #Using 1 seconds at QPD sampling rate of 5 kHz
     xforce_amp = windowed_psd(xdrive_force,5000,winsize=5000, detrend='none')
     yforce_amp = windowed_psd(ydrive_force,5000,winsize=5000, detrend='none')
     
