@@ -8,11 +8,16 @@ import functools
 from joblib import Parallel, delayed
 from BeadDataFile import *
 
+
 ncores=6
 
 def start_process():
     '''Function ran when starting new multithreading processes'''
     print('Starting', multiprocessing.current_process().name)
+    
+def average_1darray(arr, numtoaverage):
+    numextra = len(arr) % numtoaverage
+    return arr[:-numextra].reshape(-1, numtoaverage).mean(axis=1)
     
 def lin_detrend(vals):
     '''Performs linear detrending on a 1D array/list of values'''
@@ -50,6 +55,11 @@ def getimage0(h5filepath):
     with h5py.File(h5filepath, 'r') as f:
         image0 = f['cameradata']['arrays'][0]
     return image0
+
+def getlength(h5filepath):
+    with h5py.File(h5filepath, 'r') as f:
+        length = len(f['cameradata']['arrays'])
+    return length
 
 def subsetframe(sourcedata, frame, normalize, normalfactor):
     '''Multithreaded function used in multisubset'''
@@ -115,7 +125,7 @@ def expand_fromsubset(vector, subsetmap):
     outp[subsetmap] = vector
     return outp
 
-def h5_fft(h5filepath, datalength=np.inf, sectionlength=8000):
+def h5_fft(h5filepath, datalength=np.inf, sectionlength=8000,phasepixel=None):
     '''Given a filepath to an h5 file with camera data, takes the fft of each
     individual pixel. It does this by splitting into smaller sections to ease
     processing strain; default is 10 seconds by convention.
@@ -132,20 +142,23 @@ def h5_fft(h5filepath, datalength=np.inf, sectionlength=8000):
         nsections = datalength//sectionlength
         imageshape = f['cameradata']['arrays'][0].shape
         
-        #index represents the xy coordinate of the pixel with greatest magnitude in the first image.
-        #it is arbitrarily chosen to normalize the phase
-        index = np.unravel_index(np.argmax(f['cameradata']['arrays'][0]), imageshape)
-        index_slice = tuple([slice(None)]) + tuple(index)
-        
         #calculate fft, then divide by phase of index pixel. 
         #Dividing by nsections allows us to get the average with a simple sum.
-        fft_transf=np.fft.rfft(f['cameradata']['arrays'][:sectionlength], axis=0)/nsections
+        fft_transf=np.fft.rfft(f['cameradata']['arrays'][:sectionlength], axis=0)*np.sqrt(2)/(sectionlength*nsections)
+        
+        #index represents the xy coordinate of the pixel with greatest magnitude in frequency space at index 1.
+        #it is arbitrarily chosen to normalize the phase
+        if phasepixel is None:
+            phasepixel = np.unravel_index(np.argmax(np.abs(fft_transf[:,:,1])), imageshape)
+        index_slice = tuple([slice(None)]) + tuple(phasepixel)
+        
+        
         bigpixel_phase = fft_transf[index_slice]/np.abs(fft_transf[index_slice])
         fft_transf /= bigpixel_phase[tuple([slice(None)]+[np.newaxis]*len(imageshape))]
         
         #splits the data into sections, takes the fft of each, and averages.
         for i in range(1,nsections):
-            temp = np.fft.rfft(f['cameradata']['arrays'][i*sectionlength:(i+1)*sectionlength], axis=0)/nsections
+            temp = np.fft.rfft(f['cameradata']['arrays'][i*sectionlength:(i+1)*sectionlength], axis=0)*np.sqrt(2)/(sectionlength*nsections)
             bigpixel_phase = temp[index_slice]/np.abs(temp[index_slice])
             fft_transf += temp/bigpixel_phase[tuple([slice(None)]+[np.newaxis]*len(imageshape))]
             
@@ -154,7 +167,7 @@ def h5_fft(h5filepath, datalength=np.inf, sectionlength=8000):
         freqs_transf = np.fft.rfftfreq(sectionlength, 1/samplingrate_transf)
     return freqs_transf, fft_transf
 
-def isolate_frequency(full_fft, target_frequency, sectionlength=8000):
+def isolate_frequency(full_fft, target_frequency, sectionlength=8000, datalength=np.inf):
     '''Uses h5_fft (or an existing fft data result) to return each pixels fft data
     at a given frequency.
     Inputs:
@@ -162,7 +175,7 @@ def isolate_frequency(full_fft, target_frequency, sectionlength=8000):
         full_fft (tuple/array OR str): either the results from a previous full_fft run or a filepath to perform the fft on
         sectionlength (int): number of frames per section (default 8000)'''
     if type(full_fft) is str:
-        full_fft = h5_fft(full_fft, sectionlength=8000)
+        full_fft = h5_fft(full_fft, sectionlength=sectionlength, datalength=datalength)
     target_index = findclosestoset(full_fft[0], [target_frequency])[0]
     return full_fft[1][target_index]
 
@@ -200,7 +213,7 @@ def make_angleplot(fig, ax, arr, title, mask=None):
         title (string): title of graph
         mask (array[float]): alpha mask to overlay over image'''
     if mask is not None:
-        color_map_overlay = ax.imshow(arr, cmap=custom_cmap(), vmin=-np.pi,vmax=np.pi,alpha=mask/np.max(mask))
+        color_map_overlay = ax.imshow(arr, cmap=custom_cmap(), vmin=-np.pi,vmax=np.pi,alpha=(mask/np.max(mask)))
     else:
         color_map_overlay = ax.imshow(arr, cmap=custom_cmap(), vmin=-np.pi,vmax=np.pi,alpha=1)
     cbar = fig.colorbar(color_map_overlay, cmap=custom_cmap, ticks=[-np.pi, -np.pi/2, 0, np.pi/2, np.pi])
@@ -365,6 +378,9 @@ def parallelSumsMasked_h5(mask, h5filepath, datalength=np.inf, dims=2, normalize
     f.close()
 
     return returnval
+
+#def fullfolder_analysis(mask, h5filepath, indices, dims=2, normalize=True):
+    
         
 def generate_masks(xfile, yfile, xfrequency, yfrequency, blurred=True):
     '''Given an x file, a y file, and a frequency for each, converts the
@@ -373,8 +389,16 @@ def generate_masks(xfile, yfile, xfrequency, yfrequency, blurred=True):
     Output:
         The x and y maps as a numpy array stacked along the last axis'''
     
-    xmap = np.angle(isolate_frequency(xfile, xfrequency))
-    ymap = np.angle(isolate_frequency(yfile, yfrequency))
+    xmap = isolate_frequency(xfile, xfrequency)
+    xmap = xmap/np.abs(xmap)
+    phase_adjust = np.mean(np.abs(np.angle(xmap)))
+    xmap = np.real(xmap*np.exp(-1j*phase_adjust))
+    
+    ymap = isolate_frequency(yfile, yfrequency)
+    ymap = ymap/np.abs(ymap)
+    phase_adjust = np.mean(np.abs(np.angle(ymap)))
+    ymap = np.real(ymap*np.exp(-1j*phase_adjust))
+    
     
     if blurred:
         xmap = phase_to_mask(xmap)
@@ -393,7 +417,7 @@ def generate_quad_masks(shape):
     yquadmap[:shape[0]//2, :] = -1
     return np.dstack((xquadmap,yquadmap))
 
-def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True, xnormalized = True, ynormalized = True):
+def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True, xnormalized = True, ynormalized = True, datalength=np.inf, roi=None):
     '''Given an x file, a y file, and a frequency for each, generates maps from the diagonalization procedure
     shown here https://grattalab.com/elog/optlev/2024/04/25/applying-diagonalization-maps-to-11-27-camera-data/
     Inputs:
@@ -408,17 +432,18 @@ def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True, xno
         raise ValueError("X File and Y file aren't the same shape")
         
     #Get x and y frequency responses at target frequencies
-    x1 = isolate_frequency(xfile, xfrequency)
+    x1 = isolate_frequency(xfile, xfrequency, datalength=datalength)
     #x1 = singlefreq_fourier(xfile, xfrequency)
     if xnormalized: x1 = x1 / getnormscale(xfile)
-    y1 = isolate_frequency(yfile, yfrequency)
+    y1 = isolate_frequency(yfile, yfrequency, datalength=datalength)
     #y1 = singlefreq_fourier(yfile, yfrequency)
     if ynormalized: y1 = y1 / getnormscale(yfile)
     
     #Turns the maps into a nx2 matrix, then calculate the left inverse
     maps = np.squeeze(np.dstack((x1.flatten(), y1.flatten())))
     if real:
-        maps = np.real(maps)
+        phase_adjust = np.mean(np.abs(np.angle(maps)), axis=0)
+        maps = np.real(maps*np.exp(-1j*phase_adjust)[np.newaxis,:])
     maps_inv = manual_leftinv(maps)
     
     #reshape the inverted matrix to recreate the correct x/y shapes and return
@@ -522,10 +547,10 @@ def force_calibration(masks, xfile, yfile, xbeadfile, ybeadfile, electrons=9, xv
     for i in range(2):
         vals = parallelSumsMasked_h5(masks, files[i], datalength=datalength, dims=dims)
         samplingrate = getsamplingrate(files[i])
-        data = windowed_fft(np.array(vals)[:,i], samplingrate, winsize=int(samplingrate*10)) 
+        data = windowed_psd(np.array(vals)[:,i], samplingrate, winsize=int(samplingrate*10)) 
         indices = findclosestoset(data[1], xvals)
         calib[i] = force[i]/np.mean(data[0][indices])
-    return calib
+    return calib, data
 
 def get_driveforce(xfile, yfile, electrons=9, xvals = np.arange(1,100)):
     '''Given bead data files for X and Y drive, a list of comb frequencies,
@@ -542,8 +567,8 @@ def get_driveforce(xfile, yfile, electrons=9, xvals = np.arange(1,100)):
     ydrive_force = ydrive_efield*scipy.constants.e*electrons
 
     #Using 10 seconds at QPD sampling rate of 5 kHz
-    xforce_amp = windowed_fft(xdrive_force,5000,winsize=50000)
-    yforce_amp = windowed_fft(ydrive_force,5000,winsize=50000)
+    xforce_amp = windowed_psd(xdrive_force,5000,winsize=5000, detrend='none')
+    yforce_amp = windowed_psd(ydrive_force,5000,winsize=5000, detrend='none')
     
     indices = findclosestoset(xforce_amp[1], xvals)
     
