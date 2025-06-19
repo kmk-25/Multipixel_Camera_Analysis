@@ -1,5 +1,4 @@
 import numpy as np
-import dill as pickle 
 import datetime as dt
 import h5py, os, re, glob, time, sys, fnmatch, inspect
 
@@ -19,20 +18,10 @@ class BeadDataFile:
 
         f = h5py.File(fname,'r')
         pos_data = np.array(f['pos_data'])
-        quad_data = np.array(f['quad_data']) 
+        quad_data = np.array(f['quad_data']).astype(np.float64) 
         self.fsamp = f.attrs['Fsamp']
         self.fsamp /= f.attrs['downsamp']
-     
-        try:
-            self.PSPD = np.array(f['PSPD'])
-        except:    
-            print('No PSPD data')
-    
-        try:
-            self.p_trans = np.array(f['p_trans'])
-        except:    
-            print('No p_trans data')
-    
+       
         try:
             self.seismometer = np.array(f['seismometer'])
         except:    
@@ -42,6 +31,11 @@ class BeadDataFile:
             self.z_set = f.attrs['z_set']
         except:
             print('No z_set data')
+            
+        try: 
+            self.p_trans = f['p_trans']
+        except:
+            print('No p_trans data')
         
         try: 
             self.bead_height = f.attrs['bead_height']
@@ -61,10 +55,10 @@ class BeadDataFile:
         except:
             print('No cantilever data')
 
-        if self.cant_true:
-            self.cant_settings = np.array(f['cantilever_settings'])
-            self.cant_axis = f.attrs['cantilever_axis']
-            self.cant_freq = f.attrs['cantilever_freq']
+        # if self.cant_true:
+        #     self.cant_settings = np.array(f['cantilever_settings'])
+        #     self.cant_axis = f.attrs['cantilever_axis']
+        #     self.cant_freq = f.attrs['cantilever_freq']
         try:
             self.spin_data = np.array(f['spin_data'])
         except:
@@ -243,5 +237,3 @@ class BeadDataFile:
 
 
         return responsefilt
-
-

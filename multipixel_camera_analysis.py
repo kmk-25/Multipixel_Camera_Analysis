@@ -71,7 +71,7 @@ def subsetframe(sourcedata, frame, normalize, normalfactor):
 def newendaxes(dims):
     return tuple([slice(None)]+[np.newaxis]*dims)
     
-def multisubset(sourcefilename, targetfilename, frame, datalength = np.inf, normalize=True):
+def multisubset(sourcefilename, targetfilename, frame, datarange = (0,np.inf), normalize=True):
     '''Given a source h5 file, and an array of boolean values corresponding to the image shape,
     creates a new h5 file at a given file path only containing the pixels corresponding to true
     values in the boolean array. Can also be used to normalize each frame by sum.
@@ -82,14 +82,17 @@ def multisubset(sourcefilename, targetfilename, frame, datalength = np.inf, norm
         sourcefilename (string): h5 filepath to get camera data from
         targetfilename (string): h5 filepath to save the new dataset to
         frame (array[bool]): boolean array representing the pixels to subset
-        datalength (int): maximum number of frames to keep (default infinity)
+        datarange tuple(int): section of frames to analyze (defaults to full file)
         normalize (bool): normalize each frame by sum if true (default true)'''
     
     im0 = getimage0(sourcefilename)
     
     sourcefile = h5py.File(sourcefilename, 'r')
     targetfile = h5py.File(targetfilename, 'w')
+    
+    datastart, datalength = datarange
     datalength = min(len(sourcefile['cameradata']['arrays']), datalength)
+    datastart = max(datastart, 0)
     
     #This is a crude metric for scaling that sets the normalized value of the brightest pixel in the
     #first image to 240. This is used to ensure the normalized data can be saved as uint8 without
@@ -115,7 +118,7 @@ def multisubset(sourcefilename, targetfilename, frame, datalength = np.inf, norm
         targetfile.create_dataset("auxdata/normalizationscale", data=scale)
         im0_test = sourcefile['cameradata']['arrays'][0][frame]
         targetfile.create_group("cameradata")
-        targetfile.create_dataset("cameradata/arrays", data=Parallel(n_jobs=ncores)(delayed(sectionsum_specific)(i) for i in sourcefile['cameradata']['arrays'][:datalength]))
+        targetfile.create_dataset("cameradata/arrays", data=Parallel(n_jobs=ncores)(delayed(sectionsum_specific)(i) for i in sourcefile['cameradata']['arrays'][datastart:datalength]))
     finally:  
         sourcefile.close()
         targetfile.close()
@@ -136,7 +139,7 @@ def h5_fft(h5filepath, datarange=(0,np.inf), sectionlength=8000,phasepixel=None,
     
     Inputs:
         h5filepath (string): h5 filepath to get camera data from
-        datalength (int): maximum number of frames to keep (default infinity)
+        datarange tuple(int): section of frames to analyze (defaults to full file)
         sectionlength (int): number of frames per section (default 8000)
         
     Output:
@@ -177,7 +180,7 @@ def h5_fft(h5filepath, datarange=(0,np.inf), sectionlength=8000,phasepixel=None,
         #index represents the xy coordinate of the pixel with greatest magnitude in frequency space at index 1.
         #it is arbitrarily chosen to normalize the phase
         if phasepixel is None:
-            phasepixel = np.unravel_index(np.argmax(np.abs(fft_transf[:,:,1])), imageshape)
+            phasepixel = np.unravel_index(np.argmax(np.abs(fft_transf[1,:,:])), imageshape)
         index_slice = tuple([slice(None)]) + tuple(phasepixel)
         
         
@@ -186,7 +189,7 @@ def h5_fft(h5filepath, datarange=(0,np.inf), sectionlength=8000,phasepixel=None,
         
         #splits the data into sections, takes the fft of each, and averages.
         for i in range(1,nsections):
-            dat = f['cameradata']['arrays'][datastart:(datastart+sectionlength)][roi]
+            dat = f['cameradata']['arrays'][datastart:(datastart+sectionlength)][roi].astype(np.float64)
             if normalize:
                 dat /= np.sum(dat, axis=tuple(np.arange(1,len(imageshape)+1)))[newendaxes(dims)]
             if usewindow:
@@ -207,15 +210,14 @@ def h5_fft(h5filepath, datarange=(0,np.inf), sectionlength=8000,phasepixel=None,
         freqs_transf = np.fft.rfftfreq(sectionlength, 1/samplingrate_transf)
     return freqs_transf, fft_transf
 
-def isolate_frequency(full_fft, target_frequency, sectionlength=8000, datalength=np.inf):
+def isolate_frequency(full_fft, target_frequency, **kwargs):
     '''Uses h5_fft (or an existing fft data result) to return each pixels fft data
     at a given frequency.
     Inputs:
         target_frequency (int): frequency to return
-        full_fft (tuple/array OR str): either the results from a previous full_fft run or a filepath to perform the fft on
-        sectionlength (int): number of frames per section (default 8000)'''
+        full_fft (tuple/array OR str): either the results from a previous full_fft run or a filepath to perform the fft on'''
     if type(full_fft) is str:
-        full_fft = h5_fft(full_fft, sectionlength=sectionlength, datalength=datalength)
+        full_fft = h5_fft(full_fft, **kwargs)
     target_index = findclosestoset(full_fft[0], [target_frequency])[0]
     return full_fft[1][target_index]
 
@@ -245,7 +247,7 @@ def custom_cmap():
     colors = [(0, 'blue'), (0.25, 'black'), (0.5, 'red'), (0.75, 'white'), (1, 'blue')]
     return LinearSegmentedColormap.from_list("custom_colormap", colors)
 
-def make_angleplot(fig, ax, arr, title, mask=None):
+def make_angleplot(fig, ax, arr, title, mask=None, **plotargs):
     '''Helper function for plotting the fft phase for a camera frame at a given frequency.    
     Inputs:
         fig, ax: existing matplotlib fig, ax
@@ -253,11 +255,11 @@ def make_angleplot(fig, ax, arr, title, mask=None):
         title (string): title of graph
         mask (array[float]): alpha mask to overlay over image'''
     if mask is not None:
-        color_map_overlay = ax.imshow(arr, cmap=custom_cmap(), vmin=-np.pi,vmax=np.pi,alpha=(mask/np.max(mask)))
+        color_map_overlay = ax.imshow(arr, cmap=custom_cmap(), vmin=-np.pi,vmax=np.pi,alpha=(mask/np.max(mask)), **plotargs)
     else:
-        color_map_overlay = ax.imshow(arr, cmap=custom_cmap(), vmin=-np.pi,vmax=np.pi,alpha=1)
+        color_map_overlay = ax.imshow(arr, cmap=custom_cmap(), vmin=-np.pi,vmax=np.pi,alpha=1, **plotargs)
     cbar = fig.colorbar(color_map_overlay, cmap=custom_cmap, ticks=[-np.pi, -np.pi/2, 0, np.pi/2, np.pi])
-    cbar.ax.set_yticklabels([r'$-\pi$', r'$\frac{\pi}{2}$', '0', r'$\frac{\pi}{2}$', r'$\pi$'])
+    cbar.ax.set_yticklabels([r'$-\pi$', r'$-\frac{\pi}{2}$', '0', r'$\frac{\pi}{2}$', r'$\pi$'])
     cbar.ax.set_ylabel("complex phase")
     ax.set_title(title)
     ax.set_xticks([])
@@ -341,7 +343,7 @@ def windowed_psd(series, samplingrate, sqrt = True, detrend='linear', winsize=80
     
     #Getting values from window to properly scale psd
     sections = [series[i:i+winsize] for i in range(0, len(series), winsize)]
-    win = scipy.signal.windows.tukey(winsize, 0.05)
+    win = scipy.signal.windows.tukey(winsize, 1)
     S_1 = np.sum(win)
     S_2 = np.sum(win**2)
     
@@ -393,21 +395,21 @@ def findSectionSumsMasked(frame, mask, dims, normalize, roi):
     else:
         return np.squeeze(np.apply_over_axes(np.sum, (np.expand_dims(frame[roi], -1))*mask, range(dims)))
 
-def parallelSumsMasked_h5(mask, h5filepath, datasection=(0,np.inf), dims=2, normalize=True, subset=None, roi=None):
+def parallelSumsMasked_h5(mask, h5filepath, datarange=(0,np.inf), dims=2, normalize=True, subset=None, roi=None):
     '''Given a weight map and a filepath to an h5 file with camera data, 
     returns the sum of each image weighted by the given map.
     
     Inputs:
         Mask: the mask to use when summing over the image
         h5filepath: filepath to camera data being summed over
-        datalength: number of frames to sum over
+        datarange tuple(int): section of frames to sum over (defaults to full file)
         dims: number of dimensions in each frame (default: 2)
             Note: this is 2 for unmodified camera data, and 1 for subset camera data'''
     if len(mask.shape) < dims or len(mask.shape) > dims+1: raise ValueError("Dimension and mask mismatch")
     if len(mask.shape) == dims: mask = np.expand_dims(mask,-1)
     nums = []
     
-    datastart, datalength = datasection
+    datastart, datalength = datarange
     
     if roi:
         roi = np.reshape(np.array(roi), (-1,2))
@@ -441,12 +443,14 @@ def generate_masks(xfile, yfile, xfrequency, yfrequency, blurred=True):
     
     xmap = isolate_frequency(xfile, xfrequency)
     xmap = xmap/np.abs(xmap)
-    phase_adjust = np.mean(np.abs(np.angle(xmap)))
+    #phase_adjust = np.mean(np.abs(np.angle(xmap)))
+    phase_adjust=0
     xmap = np.real(xmap*np.exp(-1j*phase_adjust))
     
     ymap = isolate_frequency(yfile, yfrequency)
     ymap = ymap/np.abs(ymap)
-    phase_adjust = np.mean(np.abs(np.angle(ymap)))
+    #phase_adjust = np.mean(np.abs(np.angle(ymap)))
+    phase_adjust=0
     ymap = np.real(ymap*np.exp(-1j*phase_adjust))
     
     
@@ -467,7 +471,22 @@ def generate_quad_masks(shape):
     yquadmap[:shape[0]//2, :] = -1
     return np.dstack((xquadmap,yquadmap))
 
-def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True, xnormalized = True, ynormalized = True, datalength=np.inf):
+def invert_images(*images, real=True):
+    '''Given a list of m images of the same shape and size n, turns them into an nxm matrix, and calculate the left inverse.
+    Returns the matrices reshaped to the original image shape, dstacked.
+    real=True takes the real part of a complex map first'''
+    #Turns the maps into a nx2 matrix, then calculate the left inverse
+    shape = images[0].shape
+    maps = [image.flatten() for image in images]
+    maps = np.squeeze(np.dstack(maps))
+    if real:
+        #phase_adjust = np.mean(np.abs(np.angle(maps)), axis=0)
+        #maps = np.real(maps*np.exp(-1j*phase_adjust)[np.newaxis,:])
+        maps = np.real(maps)
+    maps_inv = manual_leftinv(maps)
+    return maps_inv.T.reshape(shape+tuple([-1]))
+
+def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True, xnormalized = True, ynormalized = True, **kwargs):
     '''Given an x file, a y file, and a frequency for each, generates maps from the diagonalization procedure
     shown here https://grattalab.com/elog/optlev/2024/04/25/applying-diagonalization-maps-to-11-27-camera-data/
     Inputs:
@@ -476,28 +495,22 @@ def generate_diagonal_masks(xfile, yfile, xfrequency, yfrequency, real=True, xno
         xfrequency (int): frequency to diagonalize the x map at
         yfrequency (int): frequency to diagonalize the y map at
         real (bool): only keep the real part of the frequency response to generate the maps (default True)
-        xnormalized, ynormalized (bool): set to true if the x and y files were normalized during subsetting (default true)'''
+        xnormalized, ynormalized (bool): set to true if the x and y files were normalized during subsetting (default true)
+        kwargs passed to h5_fft'''
     shape = getimage0(xfile).shape
     if shape != getimage0(yfile).shape:
         raise ValueError("X File and Y file aren't the same shape")
         
     #Get x and y frequency responses at target frequencies
-    x1 = isolate_frequency(xfile, xfrequency, datalength=datalength)
+    x1 = isolate_frequency(xfile, xfrequency, **kwargs)
     #x1 = singlefreq_fourier(xfile, xfrequency)
     if xnormalized: x1 = x1 / getnormscale(xfile)
-    y1 = isolate_frequency(yfile, yfrequency, datalength=datalength)
+    y1 = isolate_frequency(yfile, yfrequency, **kwargs)
     #y1 = singlefreq_fourier(yfile, yfrequency)
     if ynormalized: y1 = y1 / getnormscale(yfile)
     
     #Turns the maps into a nx2 matrix, then calculate the left inverse
-    maps = np.squeeze(np.dstack((x1.flatten(), y1.flatten())))
-    if real:
-        phase_adjust = np.mean(np.abs(np.angle(maps)), axis=0)
-        maps = np.real(maps*np.exp(-1j*phase_adjust)[np.newaxis,:])
-    maps_inv = manual_leftinv(maps)
-    
-    #reshape the inverted matrix to recreate the correct x/y shapes and return
-    return maps_inv.T.reshape(shape+tuple([2]))
+    return invert_images(x1,y1, real=real)
 
 def calculate_snr(psd_vals, signal_values, maxval=None):
     '''Given results from a PSD and frequencies at which to measure the signal,
@@ -513,7 +526,7 @@ def calculate_snr(psd_vals, signal_values, maxval=None):
     mask[maxval:] = False
     return np.mean(psd_vals[0][signal_values])/np.mean(psd_vals[0][mask])
         
-def makeTransferFuncPlot(masks, xfile, yfile, zfile=None, xvals=None, ylim=None, datalength=np.inf, filepath = None, normscale = [1,1], electrons=9, plotbase=None, dims=2, **plotargs):
+def makeTransferFuncPlot(masks, xfile, yfile, zfile=None, xvals=None, ylim=None, datarange=(0,np.inf), filepath = None, normscale = [1,1], electrons=9, plotbase=None, dims=2, **plotargs):
     '''Plots a transfer function from x, y, and optionally z camera files. Optionally save the file to a given filepath
     If frequencies are specified, only those frequencies will be shown, and the transfer functions will be converted to
     force units based on those files
@@ -524,7 +537,7 @@ def makeTransferFuncPlot(masks, xfile, yfile, zfile=None, xvals=None, ylim=None,
         zfile (string): filepath of h5 file with camera data for z transfer data (default None)
         
         ylim: y limits of plots (default None)
-        datalength (int): maximum number of frames to keep from the camera datasets (default infinity)
+        datarange tuple(int): section of frames to analyze from the camera datasets (defaults to full file)
         filepath (string): filepath to save save the image to (default None)
         dims (int): number of dimensions per image (default 2)
         
@@ -551,7 +564,7 @@ def makeTransferFuncPlot(masks, xfile, yfile, zfile=None, xvals=None, ylim=None,
     
     for j in range(len(files)):
         #Gets x/y map weighted sums for each file 
-        vals = parallelSumsMasked_h5(masks, files[j], datalength=datalength,dims=dims)
+        vals = parallelSumsMasked_h5(masks, files[j], datarange=datarange,dims=dims)
         samplingrate = getsamplingrate(files[j])
         for i in range(2):
             #Splits x/y measurements, calculates/plots psd
@@ -678,3 +691,167 @@ def parallelSectionSums_file(h5filepath_in,gridsize,h5filepath_out,expandfrom1D=
     sourcefile.close()
     targetfile.create_group("cameradata")
     targetfile.create_dataset("cameradata/arrays", data=parallelSectionSums(h5filepath_in, gridsize, datalength=datalength,expandfrom1D=expandfrom1D))
+    
+    
+    
+'''This class is intended for use combining multiple camera datasets into a single gravity dataset.
+Hopefully to be outmoded by the new camera, which will make it legacy'''
+class gravity_cameradataset():
+    def __init__(self, directorypaths):
+        if type(directorypaths) == str: self.directorypaths = [directorypaths]
+        else: self.directorypaths = directorypaths
+        self.__getfilepaths()
+        self.__getsectionindices()
+        
+    '''The class acts as a list: if you pass the index of a shaking dataset to it, you can see 
+    if the corresponding dataset was measured in its entirety by the camera, and determine
+    the frame numbers and camera filepath for the corresponding data.'''
+    def __contains__(self, key: tuple[int,int]):
+        return key[1] in self.datasections[key[0]] or key[1] in self.calibsections[key[0]]
+    def __getitem__(self, key: tuple[int,int]):
+        dirnum, datasetnum = key
+        if datasetnum in self.datasections[dirnum]:
+            foldnum, secstart, secend = self.dataindices[dirnum][self.datasections[dirnum].index(datasetnum)]
+            dirpath = os.path.join(self.directorypaths[dirnum], self.subfilepaths[dirnum][foldnum])
+            return "Data", dirpath, secstart, secend
+        elif datasetnum in self.calibsections[dirnum]:
+            foldnum, secstart, secend = self.calibindices[dirnum][self.calibsections[dirnum].index(datasetnum)]
+            dirpath = os.path.join(self.directorypaths[dirnum], self.subfilepaths[dirnum][foldnum])
+            return "Calib", dirpath, secstart, secend
+        else:
+            raise ValueError("Likely an invalid dataset number: check the datasections/calibsections \
+                                variables for valid dataset numbers")
+        
+    def analyzedata(self, mask, verbose=False, takepsd=False, **kwargs):
+        '''Given a mask, collect the fft of the sum weighted by that mask for all gravity data in the dataset.
+        Setting takepsd to True averages the psds: otherwise, the complex ffts are averaged.
+        Any additional keyword arguments are passed to parallelSumsMasked_h5.'''
+        averagedfft = 0
+        sectionsanalyzed = 0
+
+        #Assuming samplingrate is 800 fps
+        samplingrate = 800
+        length = 8000
+        window = scipy.signal.windows.tukey(length, 0.05)
+        S_1 = np.sum(window)
+        S_2 = np.sum(window**2)
+        windowsettings = (S_1,S_2)
+        freqs = np.fft.rfftfreq(8000, d=1/800)
+        
+        
+        for i, dirpath in enumerate(self.directorypaths):
+            if verbose: print(f"Now analyzing directory {i}")
+            for ind in tqdm(self.dataindices[i], disable = not verbose):
+                # Each index directs to the correct frames of the right camera data file
+                dirpath = os.path.join(dirpath,ind[0])
+                edges = (ind[1],ind[2])
+
+                # Take the sums over the camera frames, multiply by the tukey window
+                framesums = parallelSumsMasked_h5(mask, dirpath, \
+                                                          datarange=edges, **kwargs)
+                framesums -= np.mean(framesums, axis=0)
+                framesums *= window[:,np.newaxis]
+                # Take the psd before averaging if desired
+                if takepsd:
+                    averagedfft += np.abs(np.fft.rfft(framesums, axis=0)) * np.sqrt(2/(S_2*samplingrate))
+                else:
+                    averagedfft += np.fft.rfft(framesums, axis=0)
+                    
+            # Divide to rescale the average properly
+            sectionsanalyzed += len(self.dataindices[i])
+
+        return averagedfft/sectionsanalyzed
+    
+    def analyze_HQPDdata(self, beaddirectorypaths, verbose=False, takepsd=False):
+        '''Given a list of directory paths corresponding to the HQPD data, 
+        calculate the averaged fft for the HQPD data of all data sections measured by the camera.
+        Setting takepsd to True averages the psds: otherwise, the complex ffts are averaged.'''
+        self.beaddirectorypaths = beaddirectorypaths
+        averagedfft = 0
+        sectionsanalyzed = 0
+
+        samplingrate = 5000
+        length = 50000
+        window = scipy.signal.windows.tukey(50000, 0.05)
+        S_1 = np.sum(window)
+        S_2 = np.sum(window**2)
+        windowsettings = (S_1,S_2)
+        freqs = np.fft.rfftfreq(50000, d=1/5000)
+        
+        for i, dirpath in enumerate(self.directorypaths):
+            if verbose: print(f"Now analyzing directory {i}")
+            for ind in tqdm(self.datasections[i], disable = not verbose):
+                # Extract the x and y HQPD data from the correct bead directory paths
+                bdf = BeadDataFile(os.path.join(beaddirectorypaths[i],f"shaking_{ind}.h5"))
+                bdfdata = np.dstack([bdf.x2,bdf.y2]).squeeze()
+                bdfdata -= np.mean(bdfdata, axis=0)
+                bdfdata *= window_beaddatafile[:,np.newaxis]
+                if takepsd:
+                    averagedfft += np.abs(np.fft.rfft(bdfdata, axis=0)) * np.sqrt(2/(S_2*samplingrate))
+                else:
+                    averagedfft += np.fft.rfft(bdfdata, axis=0)
+                    
+            sectionsanalyzed += len(self.dataindices[i])
+
+        return averagedfft/sectionsanalyzed
+        
+    def __getfilepaths(self):
+        '''Private function to sort filepaths in each directory'''
+        self.subfilepaths = []
+        for k, directorypath in enumerate(self.directorypaths):
+            filepaths = os.listdir(directorypath)
+            filepaths.sort(key=lambda f: int(re.match(r'segment(\d+).h5', f).group(1)))
+            self.subfilepaths.append(filepaths)
+    
+    def __getsectionindices(self):
+        '''Private function to sort out the locations of each DAC dataset in the camera data,
+        thereby tracking which datasets are usable for camera analysis and which are calibration datasets'''
+        self.dataindices = [[] for i in range(len(self.directorypaths))]
+        self.datasections = [[] for i in range(len(self.directorypaths))]
+        self.calibindices = [[] for i in range(len(self.directorypaths))]
+        self.calibsections = [[] for i in range(len(self.directorypaths))]
+        self.missedsections = [[] for i in range(len(self.directorypaths))]
+        for k, directorypath in enumerate(self.directorypaths):
+            filepaths = self.subfilepaths[k]
+
+            # NOTE: nchunks represents the number of section endings seen so far. This means each dataset starts
+            # with data from the nchunks+1th section (chunk refers to DAC dataset, indexed from 0)
+            lastdt=0
+            nchunks = -1  # It seems weird to start at -1, but this is needed to make the indices work out
+            lastts=0
+            missedsections=[]
+            print(f"Now loading {directorypath}.")
+            for l, fp in enumerate(filepaths):
+
+                # Uses skips in the timestamp data due to DAC processing to find the end frames for each section
+                with h5py.File(os.path.join(directorypath,fp)) as f:
+                    dts = np.diff(f['cameradata']['timestamps'][:])
+                    lastts = f['cameradata']['timestamps'][-1]
+                sectionends = np.where(dts>1e8)[0]
+
+                # If the length of the section spanning from the end of the previous dataset
+                # to the start of the current dataset is longer than 10 seconds, then a section end
+                # must have been missed during camera downtime. This accounts for the missing end
+                if sectionends[0]+lastdt > 8000:
+                    if sectionends[0] != 7999:
+                        nchunks += 1
+                    self.missedsections[k].append(nchunks)
+
+                # Ensures the first and last sections in a file are counted only if they are complete.
+                # ie, if the camera starts recording frame 0 exactly when the DAC starts shaking
+                if sectionends[0] == 7999: 
+                    sectionends = np.insert(sectionends, 0, -1)
+                    sectionends = np.append(sectionends, 56000)
+
+                lastdt = 56000-sectionends[-1]
+
+                # Get the edges of each fully recorded dataset, and save them to an array
+                for i in range(len(sectionends)-1):
+                    goodindex = (l, sectionends[i] + 1,  sectionends[i+1] + 1)
+                    if (i + 1 + nchunks) % 10 == 9: #This is 9 since the end of section 9 is the start of section 10
+                        self.calibindices[k].append(goodindex)
+                        self.calibsections[k].append(nchunks+1+i)
+                    else:
+                        self.dataindices[k].append(goodindex)
+                        self.datasections[k].append(nchunks+1+i)
+                nchunks += len(sectionends)
