@@ -7,6 +7,7 @@ import scipy
 import functools
 from joblib import Parallel, delayed
 from BeadDataFile import *
+from tqdm import tqdm
 
 
 ncores=6
@@ -711,18 +712,23 @@ class gravity_cameradataset():
     def __getitem__(self, key: tuple[int,int]):
         dirnum, datasetnum = key
         if datasetnum in self.datasections[dirnum]:
-            foldnum, secstart, secend = self.dataindices[dirnum][self.datasections[dirnum].index(datasetnum)]
-            dirpath = os.path.join(self.directorypaths[dirnum], self.subfilepaths[dirnum][foldnum])
+            dirpath, secstart, secend = self.dataindices[dirnum][self.datasections[dirnum].index(datasetnum)]
             return "Data", dirpath, secstart, secend
         elif datasetnum in self.calibsections[dirnum]:
-            foldnum, secstart, secend = self.calibindices[dirnum][self.calibsections[dirnum].index(datasetnum)]
-            dirpath = os.path.join(self.directorypaths[dirnum], self.subfilepaths[dirnum][foldnum])
+            dirpath, secstart, secend = self.calibindices[dirnum][self.calibsections[dirnum].index(datasetnum)]
             return "Calib", dirpath, secstart, secend
         else:
             raise ValueError("Likely an invalid dataset number: check the datasections/calibsections \
                                 variables for valid dataset numbers")
+            
+    def getdata(self, key: tuple[int,int]):
+        '''Returns the camera data corresponding to a specific segment'''
+        datatype, dirpath, startind, endind = self[key]
+        with h5py.File(dirpath) as f:
+            return datatype, f['cameradata']['arrays'][startind:endind]
         
-    def analyzedata(self, mask, verbose=False, takepsd=False, **kwargs):
+        
+    def analyzedata(self, mask, verbose=False, takepsd=False, specsections = None, **kwargs):
         '''Given a mask, collect the fft of the sum weighted by that mask for all gravity data in the dataset.
         Setting takepsd to True averages the psds: otherwise, the complex ffts are averaged.
         Any additional keyword arguments are passed to parallelSumsMasked_h5.'''
@@ -738,10 +744,14 @@ class gravity_cameradataset():
         windowsettings = (S_1,S_2)
         freqs = np.fft.rfftfreq(8000, d=1/800)
         
+        if not specsections:
+            specsections = self.dataindices
+        else:
+            specsections = [[self[(i,j)][1:] for j in specsections[i]] for i in range(len(specsections))]
         
         for i, dirpath in enumerate(self.directorypaths):
             if verbose: print(f"Now analyzing directory {i}")
-            for ind in tqdm(self.dataindices[i], disable = not verbose):
+            for ind in tqdm(specsections[i], disable = not verbose):
                 # Each index directs to the correct frames of the right camera data file
                 dirpath = os.path.join(dirpath,ind[0])
                 edges = (ind[1],ind[2])
@@ -758,7 +768,7 @@ class gravity_cameradataset():
                     averagedfft += np.fft.rfft(framesums, axis=0)
                     
             # Divide to rescale the average properly
-            sectionsanalyzed += len(self.dataindices[i])
+            sectionsanalyzed += len(specsections[i])
 
         return averagedfft/sectionsanalyzed
     
@@ -778,9 +788,12 @@ class gravity_cameradataset():
         windowsettings = (S_1,S_2)
         freqs = np.fft.rfftfreq(50000, d=1/5000)
         
+        if not specsections:
+            specsections = self.dataindices
+        
         for i, dirpath in enumerate(self.directorypaths):
             if verbose: print(f"Now analyzing directory {i}")
-            for ind in tqdm(self.datasections[i], disable = not verbose):
+            for ind in tqdm(specsections[i], disable = not verbose):
                 # Extract the x and y HQPD data from the correct bead directory paths
                 bdf = BeadDataFile(os.path.join(beaddirectorypaths[i],f"shaking_{ind}.h5"))
                 bdfdata = np.dstack([bdf.x2,bdf.y2]).squeeze()
@@ -791,7 +804,7 @@ class gravity_cameradataset():
                 else:
                     averagedfft += np.fft.rfft(bdfdata, axis=0)
                     
-            sectionsanalyzed += len(self.dataindices[i])
+            sectionsanalyzed += len(specsections[i])
 
         return averagedfft/sectionsanalyzed
         
@@ -822,9 +835,9 @@ class gravity_cameradataset():
             missedsections=[]
             print(f"Now loading {directorypath}.")
             for l, fp in enumerate(filepaths):
-
+                fullpath = os.path.join(directorypath,fp)
                 # Uses skips in the timestamp data due to DAC processing to find the end frames for each section
-                with h5py.File(os.path.join(directorypath,fp)) as f:
+                with h5py.File(fullpath) as f:
                     dts = np.diff(f['cameradata']['timestamps'][:])
                     lastts = f['cameradata']['timestamps'][-1]
                 sectionends = np.where(dts>1e8)[0]
@@ -847,7 +860,7 @@ class gravity_cameradataset():
 
                 # Get the edges of each fully recorded dataset, and save them to an array
                 for i in range(len(sectionends)-1):
-                    goodindex = (l, sectionends[i] + 1,  sectionends[i+1] + 1)
+                    goodindex = (fullpath, sectionends[i] + 1,  sectionends[i+1] + 1)
                     if (i + 1 + nchunks) % 10 == 9: #This is 9 since the end of section 9 is the start of section 10
                         self.calibindices[k].append(goodindex)
                         self.calibsections[k].append(nchunks+1+i)
