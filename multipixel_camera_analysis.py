@@ -727,6 +727,48 @@ class gravity_cameradataset():
         with h5py.File(dirpath) as f:
             return datatype, f['cameradata']['arrays'][startind:endind]
         
+    def analyzedata_fullfft(self, verbose=False, takepsd=False, specsections = None, **kwargs):
+        '''Given a mask, collect the fft of the sum weighted by that mask for all gravity data in the dataset.
+        Setting takepsd to True averages the psds: otherwise, the complex ffts are averaged.
+        Any additional keyword arguments are passed to parallelSumsMasked_h5.'''
+        averagedfft = 0
+        sectionsanalyzed = 0
+
+        #Assuming samplingrate is 800 fps
+        samplingrate = 800
+        length = 8000
+        window = scipy.signal.windows.tukey(length, 0.05)
+        S_1 = np.sum(window)
+        S_2 = np.sum(window**2)
+        windowsettings = (S_1,S_2)
+        freqs = np.fft.rfftfreq(8000, d=1/800)
+
+
+        
+        if not specsections:
+            specsections = self.dataindices
+        else:
+            specsections = [[self[(i,j)][1:] for j in specsections[i]] for i in range(len(specsections))]
+        
+        for i, dirpath in enumerate(self.directorypaths):
+            if verbose: print(f"Now analyzing directory {i}")
+            for ind in tqdm(specsections[i], disable = not verbose):
+                # Each index directs to the correct frames of the right camera data file
+                dirpath = os.path.join(dirpath,ind[0])
+                edges = (ind[1],ind[2])
+
+                # Take the sums over the camera frames, multiply by the tukey window
+                _, curfft = h5_fft(dirpath, datarange=edges, **kwargs)
+                # Take the psd before averaging if desired
+                if takepsd:
+                    averagedfft += np.abs(curfft) * np.sqrt(2/(S_2*samplingrate))
+                else:
+                    averagedfft += curfft
+                    
+            # Divide to rescale the average properly
+            sectionsanalyzed += len(specsections[i])
+
+        return averagedfft/sectionsanalyzed
         
     def analyzedata(self, mask, verbose=False, takepsd=False, specsections = None, **kwargs):
         '''Given a mask, collect the fft of the sum weighted by that mask for all gravity data in the dataset.
